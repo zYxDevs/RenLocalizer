@@ -50,13 +50,35 @@ def test_font_injector_candidate_mapping():
     assert _normalize_lang_code("turkish") == "tr"
     assert _normalize_lang_code("arabic") == "ar"
     assert _normalize_lang_code("japanese") == "ja"
+    assert _normalize_lang_code("jp") == "ja"
+    assert _normalize_lang_code("korean") == "ko"
+    assert _normalize_lang_code("kor") == "ko"
+
+    # Issue #18: Chinese variants normalization
+    assert _normalize_lang_code("chinese_s") == "zh"
+    assert _normalize_lang_code("chinese-s") == "zh"
+    assert _normalize_lang_code("chinese_simplified") == "zh"
+    assert _normalize_lang_code("simplified_chinese") == "zh"
+    assert _normalize_lang_code("simplified chinese") == "zh"
+    assert _normalize_lang_code("schinese") == "zh"
+    assert _normalize_lang_code("zh-cn") == "zh"
+    assert _normalize_lang_code("zh_hans") == "zh"
+
+    assert _normalize_lang_code("chinese_t") == "zh_tw"
+    assert _normalize_lang_code("chinese_traditional") == "zh_tw"
+    assert _normalize_lang_code("traditional_chinese") == "zh_tw"
+    assert _normalize_lang_code("tchinese") == "zh_tw"
+    assert _normalize_lang_code("zh-tw") == "zh_tw"
+    assert _normalize_lang_code("zh_hant") == "zh_tw"
 
     # Verify candidates exist for critical languages
-    assert "fa" in FONT_CANDIDATES
-    assert "ar" in FONT_CANDIDATES
-    assert "he" in FONT_CANDIDATES
-    assert "tr" in FONT_CANDIDATES
-    assert "ja" in FONT_CANDIDATES
+    for code in ["fa", "ar", "he", "ur", "tr", "ja", "ko", "zh", "zh_tw", "ru", "uk", "vi", "th", "pl", "es", "de", "fr"]:
+        assert code in FONT_CANDIDATES, f"Missing candidate for {code}"
+
+    # Verify Chinese candidate is Noto Sans SC
+    zh_candidates = FONT_CANDIDATES["zh"]
+    assert zh_candidates[0][0] == "Noto Sans SC"
+    assert zh_candidates[0][1] is False
 
     # Verify Persian candidates have RTL flag True and include Vazirmatn
     fa_candidates = FONT_CANDIDATES["fa"]

@@ -20,26 +20,86 @@ logger = logging.getLogger(__name__)
 
 # Mapping: Language Code -> ordered fallback candidates (Font Family, Is RTL?)
 FONT_CANDIDATES: Dict[str, Tuple[Tuple[str, bool], ...]] = {
+    # RTL Languages
     "fa": (("Vazirmatn", True), ("Noto Sans Arabic", True), ("Sahel", True)),
     "ar": (("Noto Sans Arabic", True), ("Cairo", True), ("Tajawal", True)),
     "he": (("Noto Sans Hebrew", True), ("Rubik", True), ("Heebo", True)),
+    "ur": (("Noto Sans Arabic", True), ("Gulzar", True)),
+    # CJK Languages
     "ja": (("Noto Sans JP", False), ("M PLUS 1p", False), ("Kosugi Maru", False)),
     "zh": (("Noto Sans SC", False),),
     "zh_tw": (("Noto Sans TC", False),),
     "ko": (("Noto Sans KR", False), ("Nanum Gothic", False)),
+    # Cyrillic
     "ru": (("Noto Sans", False), ("PT Sans", False), ("Ubuntu", False)),
-    "th": (("Noto Sans Thai", False), ("Sarabun", False), ("Prompt", False)),
-    "tr": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
     "uk": (("Noto Sans", False), ("PT Sans", False), ("Ubuntu", False)),
+    "be": (("Noto Sans", False), ("PT Sans", False)),
+    # Southeast Asian & Indic
+    "th": (("Noto Sans Thai", False), ("Sarabun", False), ("Prompt", False)),
     "vi": (("Be Vietnam Pro", False), ("Noto Sans", False), ("Inter", False)),
+    "id": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "ms": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "hi": (("Noto Sans Devanagari", False),),
+    "bn": (("Noto Sans Bengali", False),),
+    # Greek & European Latin
+    "el": (("Noto Sans", False), ("Roboto", False)),
+    "tr": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "pl": (("Noto Sans", False), ("Inter", False), ("Roboto", False)),
+    "cs": (("Noto Sans", False), ("Inter", False), ("Roboto", False)),
+    "hu": (("Noto Sans", False), ("Inter", False), ("Roboto", False)),
+    "ro": (("Noto Sans", False), ("Inter", False), ("Roboto", False)),
+    "en": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "fr": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "de": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "es": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "it": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "pt": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
+    "pt_br": (("Noto Sans", False), ("Inter", False), ("Open Sans", False)),
 }
 
 LANG_NAME_TO_CODE: Dict[str, str] = {
-    "turkish": "tr", "russian": "ru", "japanese": "ja", "chinese": "zh",
-    "schinese": "zh", "tchinese": "zh_tw", "korean": "ko", "english": "en",
-    "french": "fr", "german": "de", "spanish": "es", "italian": "it",
-    "portuguese": "pt", "arabic": "ar", "persian": "fa", "farsi": "fa",
-    "hebrew": "he", "thai": "th", "vietnamese": "vi", "ukrainian": "uk",
+    # Turkish
+    "turkish": "tr", "tur": "tr", "tr": "tr",
+    # Russian & Cyrillic
+    "russian": "ru", "rus": "ru", "ru": "ru",
+    "ukrainian": "uk", "ukr": "uk", "uk": "uk",
+    "belarusian": "be", "bel": "be", "be": "be",
+    # Japanese
+    "japanese": "ja", "jpn": "ja", "japan": "ja", "nihongo": "ja", "ja": "ja", "jp": "ja",
+    # Korean
+    "korean": "ko", "kor": "ko", "korea": "ko", "hangul": "ko", "ko": "ko", "kr": "ko",
+    # Chinese (Simplified)
+    "chinese": "zh", "chi": "zh", "zho": "zh", "zh": "zh",
+    "schinese": "zh", "chinese_s": "zh", "chinese_simplified": "zh",
+    "simplified_chinese": "zh", "zh_cn": "zh", "zh_hans": "zh", "zh_sg": "zh", "zh_s": "zh",
+    # Chinese (Traditional)
+    "tchinese": "zh_tw", "chinese_t": "zh_tw", "chinese_traditional": "zh_tw",
+    "traditional_chinese": "zh_tw", "zh_tw": "zh_tw", "zh_hant": "zh_tw", "zh_hk": "zh_tw", "zh_t": "zh_tw",
+    # RTL Languages
+    "arabic": "ar", "ara": "ar", "ar": "ar",
+    "persian": "fa", "fas": "fa", "per": "fa", "farsi": "fa", "fa": "fa",
+    "hebrew": "he", "heb": "he", "iw": "he", "he": "he",
+    "urdu": "ur", "urd": "ur", "ur": "ur",
+    # Southeast Asian & Indic
+    "thai": "th", "tha": "th", "th": "th",
+    "vietnamese": "vi", "vie": "vi", "vi": "vi",
+    "indonesian": "id", "ind": "id", "id": "id",
+    "malay": "ms", "msa": "ms", "ms": "ms",
+    "hindi": "hi", "hin": "hi", "hi": "hi",
+    "bengali": "bn", "ben": "bn", "bn": "bn",
+    # European / Latin
+    "english": "en", "eng": "en", "en": "en",
+    "french": "fr", "fra": "fr", "fre": "fr", "francais": "fr", "fr": "fr",
+    "german": "de", "deu": "de", "ger": "de", "deutsch": "de", "de": "de",
+    "spanish": "es", "spa": "es", "espanol": "es", "castilian": "es", "es": "es",
+    "italian": "it", "ita": "it", "italiano": "it", "it": "it",
+    "portuguese": "pt", "por": "pt", "portugues": "pt", "pt": "pt",
+    "brazilian": "pt_br", "brazilian_portuguese": "pt_br", "pt_br": "pt_br",
+    "polish": "pl", "pol": "pl", "polski": "pl", "pl": "pl",
+    "czech": "cs", "ces": "cs", "cze": "cs", "cs": "cs",
+    "hungarian": "hu", "hun": "hu", "hu": "hu",
+    "romanian": "ro", "ron": "ro", "rum": "ro", "ro": "ro",
+    "greek": "el", "ell": "el", "gre": "el", "el": "el",
 }
 
 GUI_FONT_FIELDS = (
@@ -62,14 +122,13 @@ RTL_STYLE_NAMES = (
 
 
 def _normalize_lang_code(lang_code: str) -> str:
-    lower = lang_code.lower().strip()
-    if lower in LANG_NAME_TO_CODE:
-        return LANG_NAME_TO_CODE[lower]
-    base = lower.split('-')[0]
-    if lower in ("zh-cn", "zh_cn", "zh-hans", "schinese"):
-        return "zh"
-    if lower in ("zh-tw", "zh_tw", "zh-hant", "tchinese"):
-        return "zh_tw"
+    cleaned = lang_code.lower().strip().replace(" ", "_").replace("-", "_")
+    if cleaned in LANG_NAME_TO_CODE:
+        return LANG_NAME_TO_CODE[cleaned]
+    # Fallback to prefix before first underscore (e.g. es_ES -> es, pt_PT -> pt)
+    base = cleaned.split("_")[0]
+    if base in LANG_NAME_TO_CODE:
+        return LANG_NAME_TO_CODE[base]
     return base
 
 
@@ -146,6 +205,21 @@ def inject_font(game_dir: str, lang_code: str) -> Dict[str, Any]:
     rpy_path = game_path / "zzz_renlocalizer_font.rpy"
     font_rel = f"tl/renlocalizer_fonts/{font_filename}"
 
+    rtl_snippet = ""
+    if is_rtl:
+        rtl_snippet = f'''    try: gui.language = "unicode"; config.rtl = True
+    except Exception: pass
+    for _rs in {list(RTL_STYLE_NAMES)}:
+        try:
+            _rst = getattr(style, _rs, None)
+            if _rst:
+                try: _rst.language = "unicode"
+                except Exception: pass
+                try: _rst.reading_order = "wrtl"
+                except Exception: pass
+        except Exception: pass
+'''
+
     block = f'''
 init -999 python:
     if not hasattr(renpy.store, "renlocalizer_fonts"):
@@ -175,19 +249,7 @@ translate {lang_code} python:
             _st = getattr(style, _s, None)
             if _st: _st.font = "{font_rel}"
         except Exception: pass
-    if {is_rtl!r}:
-        try: gui.language = "unicode"; config.rtl = True
-        except Exception: pass
-        for _rs in {list(RTL_STYLE_NAMES)}:
-            try:
-                _rst = getattr(style, _rs, None)
-                if _rst:
-                    try: _rst.language = "unicode"
-                    except Exception: pass
-                    try: _rst.reading_order = "wrtl"
-                    except Exception: pass
-            except Exception: pass
-    try:
+{rtl_snippet}    try:
         if hasattr(renpy.text.font, "font_cache"): renpy.text.font.font_cache.clear()
         if hasattr(renpy.text.font, "font_names"): renpy.text.font.font_names.clear()
     except Exception: pass
