@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Mapping: Language Code -> ordered fallback candidates (Font Family, Is RTL?)
 FONT_CANDIDATES: Dict[str, Tuple[Tuple[str, bool], ...]] = {
-    "fa": (("Vazirmatn", True), ("Noto Sans Arabic", True)),
+    "fa": (("Vazirmatn", True), ("Noto Sans Arabic", True), ("Sahel", True)),
     "ar": (("Noto Sans Arabic", True), ("Cairo", True), ("Tajawal", True)),
     "he": (("Noto Sans Hebrew", True), ("Rubik", True), ("Heebo", True)),
     "ja": (("Noto Sans JP", False), ("M PLUS 1p", False), ("Kosugi Maru", False)),
@@ -38,8 +38,8 @@ LANG_NAME_TO_CODE: Dict[str, str] = {
     "turkish": "tr", "russian": "ru", "japanese": "ja", "chinese": "zh",
     "schinese": "zh", "tchinese": "zh_tw", "korean": "ko", "english": "en",
     "french": "fr", "german": "de", "spanish": "es", "italian": "it",
-    "portuguese": "pt", "arabic": "ar", "persian": "fa", "hebrew": "he",
-    "thai": "th", "vietnamese": "vi", "ukrainian": "uk",
+    "portuguese": "pt", "arabic": "ar", "persian": "fa", "farsi": "fa",
+    "hebrew": "he", "thai": "th", "vietnamese": "vi", "ukrainian": "uk",
 }
 
 GUI_FONT_FIELDS = (
@@ -57,6 +57,7 @@ STYLE_FONT_NAMES = (
 RTL_STYLE_NAMES = (
     "default", "say_dialogue", "say_label", "input", "button_text",
     "choice_button_text", "history_text", "namebox", "notify_text",
+    "confirm_prompt_text", "navigation_button_text", "quick_button_text",
 )
 
 
@@ -74,19 +75,27 @@ def _normalize_lang_code(lang_code: str) -> str:
 
 def _download_font(font_family: str, target_dir: Path) -> Tuple[bool, str]:
     font_id = font_family.lower().strip().replace(' ', '-')
-    subsets = "latin,latin-ext,cyrillic,cyrillic-ext,greek,greek-ext,vietnamese"
-    urls = [
-        f"https://gwfh.mranftl.com/api/fonts/{font_id}?download=zip&subsets={subsets}&variants=regular,400,500,700",
-        f"https://api.fontsource.org/v1/fonts/{font_id}/download",
-    ]
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+
+    # Dynamically query available subsets from GWFH API so non-Latin scripts (Arabic, Hebrew, CJK) are retained
+    subsets_str = "latin,latin-ext,cyrillic,cyrillic-ext,greek,greek-ext,vietnamese,arabic,hebrew,thai"
+    try:
+        meta_resp = requests.get(f"https://gwfh.mranftl.com/api/fonts/{font_id}", headers=headers, timeout=10)
+        if meta_resp.status_code == 200:
+            meta_subsets = meta_resp.json().get("subsets", [])
+            if meta_subsets:
+                subsets_str = ",".join(meta_subsets)
+    except Exception as e:
+        logger.debug(f"GWFH metadata query failed for {font_id}: {e}")
+
+    urls = [
+        f"https://gwfh.mranftl.com/api/fonts/{font_id}?download=zip&subsets={subsets_str}&variants=regular,400,500,700",
+    ]
 
     for url in urls:
         try:
             resp = requests.get(url, headers=headers, timeout=60)
-            if resp.status_code != 200:
-                continue
-            if len(resp.content) < 1000:
+            if resp.status_code != 200 or len(resp.content) < 1000:
                 continue
             z = zipfile.ZipFile(io.BytesIO(resp.content))
             font_files = [f for f in z.namelist() if f.lower().endswith(('.ttf', '.otf'))]
@@ -160,27 +169,31 @@ translate {lang_code} python:
     for _f in {list(GUI_FONT_FIELDS)}:
         try:
             if hasattr(gui, _f): setattr(gui, _f, "{font_rel}")
-        except: pass
+        except Exception: pass
     for _s in {list(STYLE_FONT_NAMES)}:
         try:
             _st = getattr(style, _s, None)
             if _st: _st.font = "{font_rel}"
-        except: pass
+        except Exception: pass
     if {is_rtl!r}:
         try: gui.language = "unicode"; config.rtl = True
-        except: pass
+        except Exception: pass
         for _rs in {list(RTL_STYLE_NAMES)}:
             try:
                 _rst = getattr(style, _rs, None)
-                if _rst: _rst.language = "unicode"; _rst.reading_order = "wrtl"
-            except: pass
+                if _rst:
+                    try: _rst.language = "unicode"
+                    except Exception: pass
+                    try: _rst.reading_order = "wrtl"
+                    except Exception: pass
+            except Exception: pass
     try:
         if hasattr(renpy.text.font, "font_cache"): renpy.text.font.font_cache.clear()
         if hasattr(renpy.text.font, "font_names"): renpy.text.font.font_names.clear()
-    except: pass
+    except Exception: pass
     style.rebuild()
     try: renpy.restart_interaction()
-    except: pass
+    except Exception: pass
 '''
 
     with open(rpy_path, 'w', encoding='utf-8') as f:

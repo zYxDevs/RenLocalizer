@@ -36,6 +36,12 @@ from .base import PipelineStage, PipelineResult, PipelineWorker
 from .constants import (
     RENPY_TO_API_LANG,
     TRANSLATION_ID_KEY_RE,
+    DEEP_SCAN_VAR_ONLY_RE,
+    DEEP_SCAN_MARKUP_STRIP_RE,
+    LATIN_EXTENDED_CHAR_RE,
+    STRING_PAIR_BLOCK_RE,
+    DIALOGUE_PAIR_BLOCK_RE,
+    is_rtl_language,
 )
 from .validating import (
     find_rpymc_files, extract_strings_from_rpymc_ast,
@@ -68,6 +74,7 @@ from .translating import (
     is_aggressive_extraction_mode as _is_aggressive,
 )
 from .saving import (
+    generate_strings_json,
     synthesize_hotkey_visible_variants,
     synthesize_angle_wrapper_variants,
     synthesize_visible_text_variants,
@@ -134,6 +141,7 @@ class TranslationPipeline(QObject):
         self.engine: TranslationEngine = TranslationEngine.GOOGLE
         self.auto_unren: bool = True
         self.use_proxy: bool = False
+        self.is_tl_mode: bool = False
         self._translation_guard_events: List[Dict[str, Any]] = []
         self._translation_guard_counts: Dict[str, int] = {}
         self._translation_guard_sample_limit = 200
@@ -349,9 +357,11 @@ class TranslationPipeline(QObject):
         auto_unren: bool = True,
         use_proxy: bool = False,
         include_deep_scan: bool = False,
-        include_rpyc: bool = False
+        include_rpyc: bool = False,
+        is_tl_mode: bool = False,
     ):
         """Pipeline ayarlarını yapılandır."""
+        self.is_tl_mode = is_tl_mode
         self.include_deep_scan = include_deep_scan
         self.include_rpyc = include_rpyc
         self.game_exe_path = game_exe_path
@@ -400,7 +410,16 @@ class TranslationPipeline(QObject):
         self.is_running = True
         self.should_stop = False
         try:
-            result = self._run_pipeline()
+            if getattr(self, "is_tl_mode", False):
+                result = self.translate_existing_tl(
+                    tl_root_path=self.game_exe_path,
+                    target_language=self.target_language,
+                    source_language=self.source_language,
+                    engine=self.engine,
+                    use_proxy=self.use_proxy,
+                )
+            else:
+                result = self._run_pipeline()
             self.finished.emit(result)
         except Exception as e:
             self.logger.exception("Pipeline hatası")
@@ -450,7 +469,7 @@ class TranslationPipeline(QObject):
         return run_extraction(project_path, self.config, self.log_message.emit, self._log_error)
 
     def _cleanup_legacy_mod_files(self, game_dir):
-        return cleanup_legacy_mod_files(game_dir, self.log_message.emit)
+        return cleanup_legacy_mod_files(game_dir, self.log_message.emit, self.config)
 
     def _write_translation_reports(self, lang_dir):
         self._last_diagnostic_path = write_translation_reports(
@@ -492,6 +511,12 @@ class TranslationPipeline(QObject):
         self.project_path = os.path.abspath(Path(tl_root_path).parent.parent) if tl_root_path else None
 
         self._set_stage(PipelineStage.PARSING, self.config.get_ui_text("stage_parsing"))
+
+        if is_rtl_language(renpy_lang) or is_rtl_language(target_iso):
+            self.log_message.emit(
+                "info",
+                "[RTL] Target language is Right-to-Left (RTL). Ensure a compatible font is installed or use Toolbox -> Font Injector if characters appear disconnected.",
+            )
 
         p = Path(tl_root_path)
         lang_dir: Optional[Path] = None
@@ -717,6 +742,12 @@ class TranslationPipeline(QObject):
         self._reset_translation_diagnostics()
 
         self._set_stage(PipelineStage.VALIDATING, self.config.get_ui_text("stage_validating"))
+
+        if is_rtl_language(self.target_language):
+            self.log_message.emit(
+                "info",
+                "[RTL] Target language is Right-to-Left (RTL). Ensure a compatible font is installed or use Toolbox -> Font Injector if characters appear disconnected.",
+            )
 
         if not self.game_exe_path:
             return PipelineResult(
@@ -1137,8 +1168,6 @@ class TranslationPipeline(QObject):
 
             existing = {e.original_text for t in tl_files for e in t.entries}
             missing = []
-            _var_only_re = re.compile(r'^\[[a-zA-Z_]\w*\]$')
-            _markup_strip_re = re.compile(r'\{[^}]*\}|\[[^\]]*\]')
             for entries in scan_res.values():
                 for e in entries:
                     txt = e.get('text')
@@ -1147,10 +1176,10 @@ class TranslationPipeline(QObject):
                     if txt in existing:
                         continue
                     _stripped = txt.strip()
-                    if _var_only_re.match(_stripped):
+                    if DEEP_SCAN_VAR_ONLY_RE.match(_stripped):
                         continue
-                    _core = _markup_strip_re.sub('', _stripped).strip()
-                    if _core and not re.search(r'[a-zA-Z\u00C0-\u024F]', _core):
+                    _core = DEEP_SCAN_MARKUP_STRIP_RE.sub('', _stripped).strip()
+                    if _core and not LATIN_EXTENDED_CHAR_RE.search(_core):
                         continue
                     missing.append(e)
                     existing.add(txt)
@@ -1486,8 +1515,6 @@ class TranslationPipeline(QObject):
             try:
                 lang_tl_path = os.path.join(game_dir, 'tl', renpy_lang)
                 if os.path.isdir(lang_tl_path):
-                    string_pair_pattern = re.compile(r'^\s*old\s+"(?P<old>.*?)"\s*\n\s*new\s+"(?P<new>.*?)"\s*$', re.MULTILINE | re.DOTALL)
-                    dialogue_block_pat = re.compile(r'^\s*#\s*(?:\w+\s+)?"(?P<old>.*?)"\s*\n\s*(?:\w+\s+)?"(?P<new>.*?)"\s*$', re.MULTILINE | re.DOTALL)
                     for root, dirs, files in os.walk(lang_tl_path):
                         for filename in files:
                             if not filename.lower().endswith('.rpy'):
@@ -1496,12 +1523,12 @@ class TranslationPipeline(QObject):
                             try:
                                 with open(filepath, 'r', encoding='utf-8-sig', errors='replace') as f:
                                     content = f.read()
-                                for match in string_pair_pattern.finditer(content):
+                                for match in STRING_PAIR_BLOCK_RE.finditer(content):
                                     old_text = match.group('old')
                                     if old_text:
                                         old_text = old_text.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
                                         existing_global_strings.add(old_text)
-                                for m2 in dialogue_block_pat.finditer(content):
+                                for m2 in DIALOGUE_PAIR_BLOCK_RE.finditer(content):
                                     old_t = m2.group('old')
                                     if old_t:
                                         old_t = old_t.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
@@ -1716,36 +1743,6 @@ class TranslationPipeline(QObject):
         api_target_lang = RENPY_TO_API_LANG.get(self.target_language, self.target_language)
         api_source_lang = RENPY_TO_API_LANG.get(self.source_language, self.source_language)
 
-        if self.source_language.lower() == "auto" and self.engine == TranslationEngine.GOOGLE:
-            self.log_message.emit("info", self.config.get_log_text('smart_detect_starting', "[Smart Detect] Kaynak dil tespit ediliyor..."))
-            text_samples = [e.original_text for e in entries]
-            translator = self.translation_manager.translators.get(TranslationEngine.GOOGLE)
-            if not translator:
-                translator = GoogleTranslator(config_manager=self.config)
-                self.translation_manager.add_translator(TranslationEngine.GOOGLE, translator)
-            try:
-                detection_translator = GoogleTranslator(config_manager=self.config)
-                detect_loop = asyncio.new_event_loop()
-                detected_lang = detect_loop.run_until_complete(
-                    detection_translator.detect_language(text_samples, target_lang=api_target_lang)
-                )
-                detect_loop.run_until_complete(detection_translator.close_session())
-                detect_loop.close()
-                if detected_lang:
-                    api_source_lang = detected_lang
-                    self.log_message.emit("info", self.config.get_log_text(
-                        'smart_detect_success',
-                        "[Smart Detect] Source language detected: {detected_lang}",
-                        detected_lang=detected_lang.upper(),
-                    ))
-                else:
-                    self.log_message.emit("warning", self.config.get_log_text(
-                        'smart_detect_fallback', "[Smart Detect] Guven esigi gecilemedi, 'auto' modunda devam ediliyor."))
-                    api_source_lang = "auto"
-            except Exception as e:
-                self.logger.warning(f"Smart language detection failed: {e}")
-                api_source_lang = "auto"
-
         should_use_global_cache = getattr(self.config.translation_settings, 'use_global_cache', True)
         if should_use_global_cache:
             from src.utils.path_manager import get_project_id
@@ -1789,7 +1786,37 @@ class TranslationPipeline(QObject):
 
         self.log_message.emit("info", self.config.get_log_text('translation_lang_api', lang=self.target_language, api=api_target_lang))
 
+        # Unified Event Loop for detection and all translation requests
         loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        if self.source_language.lower() == "auto" and self.engine == TranslationEngine.GOOGLE:
+            self.log_message.emit("info", self.config.get_log_text('smart_detect_starting', "[Smart Detect] Kaynak dil tespit ediliyor..."))
+            text_samples = [e.original_text for e in entries]
+            translator = self.translation_manager.translators.get(TranslationEngine.GOOGLE)
+            if not translator:
+                translator = GoogleTranslator(config_manager=self.config)
+                self.translation_manager.add_translator(TranslationEngine.GOOGLE, translator)
+            try:
+                detection_translator = GoogleTranslator(config_manager=self.config)
+                detected_lang = loop.run_until_complete(
+                    detection_translator.detect_language(text_samples, target_lang=api_target_lang)
+                )
+                loop.run_until_complete(detection_translator.close_session())
+                if detected_lang:
+                    api_source_lang = detected_lang
+                    self.log_message.emit("info", self.config.get_log_text(
+                        'smart_detect_success',
+                        "[Smart Detect] Source language detected: {detected_lang}",
+                        detected_lang=detected_lang.upper(),
+                    ))
+                else:
+                    self.log_message.emit("warning", self.config.get_log_text(
+                        'smart_detect_fallback', "[Smart Detect] Guven esigi gecilemedi, 'auto' modunda devam ediliyor."))
+                    api_source_lang = "auto"
+            except Exception as e:
+                self.logger.warning(f"Smart language detection failed: {e}")
+                api_source_lang = "auto"
 
         if self.engine == TranslationEngine.GOOGLE and self.engine not in self.translation_manager.translators:
             gt = GoogleTranslator(config_manager=self.config, proxy_manager=getattr(self.translation_manager, "proxy_manager", None))
@@ -1860,14 +1887,16 @@ class TranslationPipeline(QObject):
 
         _auto_names_added = 0
         if getattr(self.config.translation_settings, 'auto_protect_character_names', True):
-            existing_glossary = self.config.glossary if hasattr(self.config, 'glossary') and self.config.glossary else {}
+            existing_glossary = dict(self.config.glossary) if hasattr(self.config, 'glossary') and self.config.glossary else {}
             existing_lower = {k.lower() for k in existing_glossary}
+            from src.core.glossary_manager import COMMON_ENGLISH_STOPWORDS
             char_names: set = set()
             for entry in entries:
                 c = getattr(entry, 'character', '') or ''
                 c = c.strip()
-                if (c and len(c) >= 2 and not c.startswith('[') and not c.startswith('{')
-                        and not c.startswith('$') and c.lower() not in existing_lower and c[0].isupper()):
+                if (c and len(c) >= 3 and not c.startswith('[') and not c.startswith('{')
+                        and not c.startswith('$') and c.lower() not in existing_lower
+                        and c.lower() not in COMMON_ENGLISH_STOPWORDS and c[0].isupper()):
                     char_names.add(c)
             if char_names:
                 _lock = getattr(self.config, '_lock', None)
@@ -1955,6 +1984,7 @@ class TranslationPipeline(QObject):
                             metadata={'preprotected': True, 'original_text': template, 'entry': entry,
                                       'translation_id': translation_id, 'file_path': entry.file_path,
                                       'line_number': entry.line_number,
+                                      'character': getattr(entry, 'character', None),
                                       'context_path': getattr(entry, 'context_path', []),
                                       'placeholders': ph_template, 'xml_mode': is_ai_engine,
                                       '_multi_group_template': True}
@@ -1976,6 +2006,7 @@ class TranslationPipeline(QObject):
                                     metadata={'preprotected': True, 'original_text': seg_text, 'entry': entry,
                                               'translation_id': translation_id, 'file_path': entry.file_path,
                                               'line_number': entry.line_number,
+                                              'character': getattr(entry, 'character', None),
                                               'context_path': getattr(entry, 'context_path', []),
                                               'placeholders': ph_seg, 'xml_mode': is_ai_engine,
                                               '_multi_group_segment': True}
@@ -2006,6 +2037,7 @@ class TranslationPipeline(QObject):
                                 metadata={'preprotected': True, 'original_text': seg_text, 'entry': entry,
                                           'translation_id': translation_id, 'file_path': entry.file_path,
                                           'line_number': entry.line_number,
+                                          'character': getattr(entry, 'character', None),
                                           'context_path': getattr(entry, 'context_path', []),
                                           'placeholders': placeholders, 'xml_mode': is_ai_engine,
                                           '_delimiter_segment': True}
@@ -2029,6 +2061,7 @@ class TranslationPipeline(QObject):
                         metadata={'preprotected': True, 'original_text': entry.original_text, 'entry': entry,
                                   'translation_id': translation_id, 'file_path': entry.file_path,
                                   'line_number': entry.line_number,
+                                  'character': getattr(entry, 'character', None),
                                   'context_path': getattr(entry, 'context_path', []),
                                   'placeholders': placeholders, 'xml_mode': is_ai_engine,
                                   'context_hint': _prev_entry_text if (
@@ -2344,257 +2377,26 @@ class TranslationPipeline(QObject):
 
         return translations
 
-    # ---- _generate_strings_json (stays as method due to deep coupling) ----
+    # ---- _generate_strings_json delegation ----
 
-    def _generate_strings_json(self, tl_files: List[TranslationFile], lang_dir: str, extra_translations: dict = None):
-        """Tüm çevirileri strings.json dosyasına aktarır."""
-        try:
-            mapping: Dict[str, str] = {}
-            skipped_corrupt = 0
-            skipped_reason_counts = {
-                'separator_remnant': 0, 'placeholder_remnant': 0, 'html_leakage': 0,
-                'length_inflation': 0, 'placeholder_set_mismatch': 0,
-                'renpy_tag_set_mismatch': 0, 'duplicate_key_conflict': 0,
-                'case_insensitive_conflict': 0,
-            }
-            mapping_sources: Dict[str, List[dict]] = {}
-            lower_to_orig: Dict[str, List[str]] = {}
-            skipped_samples = []
-
-            def _mark_skipped(reason, original, translated):
-                nonlocal skipped_corrupt
-                skipped_corrupt += 1
-                if reason in skipped_reason_counts:
-                    skipped_reason_counts[reason] += 1
-                if len(skipped_samples) < 200:
-                    sample = {'reason': reason, 'original': original, 'translated': translated}
-                    if reason == 'duplicate_key_conflict' and original in mapping:
-                        sample['existing_translation'] = mapping[original]
-                        sample['sources'] = mapping_sources.get(original, [])
-                    skipped_samples.append(sample)
-
-            def _try_add_mapping(original, translated, source_file=None, line_num=None):
-                orig = (original or '').strip()
-                trans = (translated or '').strip()
-                if not orig or not trans or orig == trans:
-                    return
-                if TRANSLATION_ID_KEY_RE.fullmatch(orig):
-                    return
-                reason = self._classify_translation_corruption(orig, trans)
-                if reason is not None:
-                    _mark_skipped(reason, orig, trans)
-                    self.logger.debug("strings.json: Skipping %s in translation of: %s", reason, orig[:40])
-                    return
-                if orig in mapping:
-                    if mapping[orig] != trans:
-                        _mark_skipped('duplicate_key_conflict', orig, trans)
-                        self.logger.debug("strings.json: Duplicate key conflict: %s", orig[:40])
-                    return
-                lower_orig = orig.lower()
-                if lower_orig in lower_to_orig:
-                    has_ci_conflict = False
-                    for other_orig in lower_to_orig[lower_orig]:
-                        if mapping[other_orig] != trans:
-                            has_ci_conflict = True
-                            break
-                    if has_ci_conflict:
-                        _mark_skipped('case_insensitive_conflict', orig, trans)
-                    if orig not in lower_to_orig[lower_orig]:
-                        lower_to_orig[lower_orig].append(orig)
-                else:
-                    lower_to_orig[lower_orig] = [orig]
-                mapping[orig] = trans
-                if source_file:
-                    if orig not in mapping_sources:
-                        mapping_sources[orig] = []
-                    mapping_sources[orig].append({'file': source_file, 'line': line_num})
-
-            for tfile in tl_files:
-                for entry in tfile.entries:
-                    if entry.original_text and entry.translated_text:
-                        _try_add_mapping(
-                            entry.original_text, entry.translated_text,
-                            source_file=os.path.basename(tfile.file_path), line_num=entry.line_number
-                        )
-
-            if extra_translations:
-                for orig, trans in extra_translations.items():
-                    _try_add_mapping(orig, trans)
-
-            try:
-                from src.core.syntax_guard import split_angle_pipe_groups, split_delimited_text
-                _seg_additions = {}
-                _seg_count = 0
-                for m_orig, m_trans in list(mapping.items()):
-                    orig_split = split_angle_pipe_groups(m_orig)
-                    if orig_split is not None:
-                        trans_split = split_angle_pipe_groups(m_trans)
-                        if trans_split is not None:
-                            _, orig_groups = orig_split
-                            _, trans_groups = trans_split
-                            for g_idx in range(min(len(orig_groups), len(trans_groups))):
-                                o_segs = orig_groups[g_idx]
-                                t_segs = trans_groups[g_idx]
-                                for s_idx in range(min(len(o_segs), len(t_segs))):
-                                    o_s = o_segs[s_idx].strip()
-                                    t_s = t_segs[s_idx].strip()
-                                    if o_s and t_s and o_s != t_s and o_s not in mapping and o_s not in _seg_additions:
-                                        _seg_additions[o_s] = t_s
-                                        _seg_count += 1
-                        continue
-                    if '|' not in m_orig:
-                        continue
-                    orig_delim = split_delimited_text(m_orig)
-                    if orig_delim is None:
-                        if '|' in m_orig and '|' in m_trans:
-                            o_parts = m_orig.split('|')
-                            t_parts = m_trans.split('|')
-                            if (len(o_parts) >= 2 and len(o_parts) == len(t_parts) and len(o_parts) <= 6):
-                                _pipe_valid = True
-                                for _p in o_parts:
-                                    if sum(1 for ch in _p.strip() if ch.isalpha()) < 2:
-                                        _pipe_valid = False
-                                        break
-                                if _pipe_valid:
-                                    for o_s, t_s in zip(o_parts, t_parts):
-                                        o_s = o_s.strip()
-                                        t_s = t_s.strip()
-                                        if o_s and t_s and o_s != t_s and o_s not in mapping and o_s not in _seg_additions:
-                                            _seg_additions[o_s] = t_s
-                                            _seg_count += 1
-                        continue
-                    o_segs, _, _, _ = orig_delim
-                    trans_delim = split_delimited_text(m_trans)
-                    if trans_delim is not None:
-                        t_segs, _, _, _ = trans_delim
-                    elif '|' in m_trans:
-                        t_segs = m_trans.split('|')
-                    else:
-                        continue
-                    for s_idx in range(min(len(o_segs), len(t_segs))):
-                        o_s = o_segs[s_idx].strip()
-                        t_s = t_segs[s_idx].strip()
-                        if o_s and t_s and o_s != t_s and o_s not in mapping and o_s not in _seg_additions:
-                            _seg_additions[o_s] = t_s
-                            _seg_count += 1
-                if _seg_additions:
-                    mapping.update(_seg_additions)
-                    self.logger.info(f"strings.json: {_seg_count} individual segments extracted from delimiter groups")
-            except Exception as e:
-                self.logger.debug(f"strings.json segment splitting skipped: {e}")
-
-            try:
-                _RENPY_TAG_RE2 = re.compile(
-                    r'\{/?(?:b|i|u|s|plain|color|font|size|cps|nw|fast|w|p|a|'
-                    r'outlinecolor|alpha|k|rt|rb|image|space|vspace)(?:=[^}]*)?\}'
-                )
-                _tag_stripped_additions = {}
-                _tag_strip_count = 0
-                for m_orig, m_trans in list(mapping.items()):
-                    if not _RENPY_TAG_RE2.search(m_orig):
-                        continue
-                    stripped_orig = _RENPY_TAG_RE2.sub('', m_orig).strip()
-                    stripped_trans = _RENPY_TAG_RE2.sub('', m_trans).strip()
-                    if (stripped_orig and stripped_trans and stripped_orig != stripped_trans
-                            and len(stripped_orig) >= 2 and any(c.isalpha() for c in stripped_orig)
-                            and stripped_orig not in mapping
-                            and stripped_orig not in _tag_stripped_additions):
-                        _tag_stripped_additions[stripped_orig] = stripped_trans
-                        _tag_strip_count += 1
-                if _tag_stripped_additions:
-                    mapping.update(_tag_stripped_additions)
-                    self.logger.info(f"strings.json: {_tag_strip_count} tag-stripped entries added for replace_text coverage")
-            except Exception as e:
-                self.logger.debug(f"strings.json tag-stripping skipped: {e}")
-
-            for synth_fn, detail_name in [
-                (self._synthesize_hotkey_visible_variants, 'visible_hotkey_variant'),
-                (self._synthesize_angle_wrapper_variants, 'angle_wrapper_variant'),
-                (self._synthesize_visible_text_variants, 'visible_text_variant'),
-                (self._synthesize_visible_fragment_variants, 'visible_fragment_variant'),
-            ]:
-                try:
-                    additions = synth_fn(mapping)
-                    if additions:
-                        for key, value in additions.items():
-                            if key in mapping:
-                                continue
-                            mapping[key] = value
-                            self._record_translation_guard_event(
-                                category='recovered_by_synthesized_variant',
-                                file_path='strings.json', translation_id=key,
-                                original_text=key, translated_text=value,
-                                detail=detail_name,
-                            )
-                            try:
-                                self.diagnostic_report.mark_recovered(
-                                    'strings.json', key, 'synthesized_variant',
-                                    original_text=key, translated_text=value,
-                                )
-                            except Exception:
-                                self.logger.debug("diagnostic mark_written failed during runtime coverage synthesis for key=%s", key)
-                        self.logger.info(f"strings.json: {len(additions)} {detail_name} synthesized for runtime coverage")
-                except Exception as e:
-                    self.logger.debug(f"strings.json {detail_name} synthesis skipped: {e}")
-
-            try:
-                runtime_observed_additions = self._synthesize_runtime_observed_variants(mapping, lang_dir)
-                if runtime_observed_additions:
-                    for key, value in runtime_observed_additions.items():
-                        if key in mapping:
-                            continue
-                        mapping[key] = value
-                        self._record_translation_guard_event(
-                            category='recovered_by_synthesized_variant',
-                            file_path='strings.json', translation_id=key,
-                            original_text=key, translated_text=value,
-                            detail='runtime_observed_variant',
-                        )
-                        try:
-                            self.diagnostic_report.mark_recovered(
-                                'strings.json', key, 'synthesized_variant',
-                                original_text=key, translated_text=value,
-                            )
-                        except Exception:
-                            self.logger.debug("diagnostic mark_written failed during runtime-observed alias synthesis for key=%s", key)
-                    self.logger.info(f"strings.json: {len(runtime_observed_additions)} runtime-observed aliases synthesized from missed-string diagnostics")
-            except Exception as e:
-                self.logger.debug(f"strings.json runtime-observed synthesis skipped: {e}")
-
-            if skipped_corrupt > 0:
-                self.logger.warning(f"strings.json: Skipped {skipped_corrupt} potentially corrupted translation(s)")
-                reason_summary = ', '.join(f"{name}={count}" for name, count in skipped_reason_counts.items() if count > 0)
-                if reason_summary:
-                    self.logger.info(f"strings.json: Corruption reasons -> {reason_summary}")
-                try:
-                    diag_dir = os.path.join(lang_dir, 'diagnostics')
-                    os.makedirs(diag_dir, exist_ok=True)
-                    report_path = os.path.join(diag_dir, 'strings_json_skipped_corruptions.json')
-                    save_text_safely(Path(report_path), json.dumps({
-                        'generated_at': int(time.time()),
-                        'total_skipped': skipped_corrupt,
-                        'reason_counts': skipped_reason_counts,
-                        'sample_limit': 100,
-                        'samples': skipped_samples,
-                    }, ensure_ascii=False, indent=2), encoding='utf-8')
-                    self.logger.info(f"strings.json: Wrote skipped-corruption report -> {report_path}")
-                except Exception as report_exc:
-                    self.logger.debug(f"strings.json: Failed to write skipped-corruption report: {report_exc}")
-
-            if mapping:
-                json_path = os.path.join(lang_dir, "strings.json")
-                try:
-                    from src.core.exporter import _has_dynamic_variables
-                    dynamic_entries = {k: v for k, v in mapping.items() if _has_dynamic_variables(k)}
-                except Exception:
-                    dynamic_entries = {}
-                payload = {"translations": mapping, "dynamic": dynamic_entries}
-                save_text_safely(Path(json_path), json.dumps(payload, ensure_ascii=False, indent=4), encoding='utf-8')
-                dyn_msg = f" ({len(dynamic_entries)} dynamic)" if dynamic_entries else ""
-                self.log_message.emit('info', self.config.get_log_text('log_strings_json_generated', count=len(mapping)) + dyn_msg)
-                return len(mapping)
-        except Exception as e:
-            self.logger.warning(f"Failed to generate strings.json: {e}")
+    def _generate_strings_json(
+        self,
+        tl_files: List[TranslationFile],
+        lang_dir: str,
+        extra_translations: Optional[Dict[str, str]] = None,
+    ) -> Optional[int]:
+        """Tüm çevirileri strings.json dosyasına aktarır (delegated to saving.generate_strings_json)."""
+        return generate_strings_json(
+            tl_files=tl_files,
+            lang_dir=lang_dir,
+            extra_translations=extra_translations,
+            is_aggressive=self._is_aggressive_extraction_mode(),
+            record_guard_event=self._record_translation_guard_event,
+            diagnostic_report=getattr(self, 'diagnostic_report', None),
+            log_emit=self.log_message.emit if hasattr(self, 'log_message') else None,
+            config=getattr(self, 'config', None),
+            logger_override=getattr(self, 'logger', None),
+        )
 
     # ---- legacy methods kept for backward compat ----
 

@@ -39,14 +39,16 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
 # UTF-8 stdout
 try:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as e:
+    logger.debug("Failed to reconfigure stdout/stderr encoding: %s", e)
 
 if RICH_AVAILABLE:
     console = Console(highlight=False)
@@ -284,8 +286,10 @@ class CliHandler(QObject):
     @pyqtSlot(str, str)
     def on_stage_changed(self, stage: str, message: str):
         if self._progress is not None:
-            try: self._progress.stop()
-            except Exception: pass
+            try:
+                self._progress.stop()
+            except Exception as e:
+                logger.debug("Failed to stop CLI progress bar on stage change: %s", e)
             self._progress = None
             self._progress_task = None
 
@@ -340,8 +344,10 @@ class CliHandler(QObject):
     @pyqtSlot(object)
     def on_finished(self, result: PipelineResult):
         if self._progress is not None:
-            try: self._progress.stop()
-            except Exception: pass
+            try:
+                self._progress.stop()
+            except Exception as e:
+                logger.debug("Failed to stop CLI progress bar on finish: %s", e)
             self._progress = None
 
         elapsed = time.time() - self._start_time

@@ -4,6 +4,7 @@ Module-level constants and regex patterns for the translation pipeline.
 """
 
 import re
+from typing import Optional
 
 
 def _get_renpy_to_api_lang():
@@ -55,6 +56,19 @@ class _LazyRenpyToApiLangMap:
 
 
 RENPY_TO_API_LANG = _LazyRenpyToApiLangMap()
+ 
+RTL_LANGUAGES: frozenset = frozenset({
+    "arabic", "farsi", "persian", "hebrew", "urdu", "pashto", "sindhi",
+    "ar", "fa", "he", "ur", "ps", "sd",
+})
+
+
+def is_rtl_language(lang_code: Optional[str]) -> bool:
+    """Check if a given language name or ISO code is Right-to-Left (RTL)."""
+    if not lang_code:
+        return False
+    return lang_code.strip().lower() in RTL_LANGUAGES
+
 
 CORE_UI_RETRY_STRINGS = {
     "About",
@@ -99,6 +113,11 @@ PLACEHOLDER_REMNANT_RE = re.compile(
 )
 TRANSLATION_ID_KEY_RE = re.compile(r"^id_[0-9a-f]{16,}$")
 QUOTED_LITERAL_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\\\']|\\.)*\'')
+DEEP_SCAN_VAR_ONLY_RE = re.compile(r"^\[[a-zA-Z_]\w*\]$")
+DEEP_SCAN_MARKUP_STRIP_RE = re.compile(r"\{[^}]*\}|\[[^\]]*\]")
+LATIN_EXTENDED_CHAR_RE = re.compile(r"[a-zA-Z\u00C0-\u024F]")
+STRING_PAIR_BLOCK_RE = re.compile(r'^\s*old\s+"(?P<old>.*?)"\s*\n\s*new\s+"(?P<new>.*?)"\s*$', re.MULTILINE | re.DOTALL)
+DIALOGUE_PAIR_BLOCK_RE = re.compile(r'^\s*#\s*(?:\w+\s+)?"(?P<old>.*?)"\s*\n\s*(?:\w+\s+)?"(?P<new>.*?)"\s*$', re.MULTILINE | re.DOTALL)
 IMAGE_ONLY_BLOCK_RE = re.compile(r'^\s*(?P<kind>imagebutton|hotspot)\b')
 TEXTUAL_UI_HINT_RE = re.compile(
     r'\b(?:tooltip|alt)\b|^\s*(?:text|textbutton|label|caption)\b|\bText\s*\('

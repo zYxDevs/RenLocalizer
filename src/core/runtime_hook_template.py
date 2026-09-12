@@ -64,6 +64,23 @@ def render_runtime_hook_native(renpy_lang: str) -> str:
     
     Dialogues are handled by Ren'Py's native TLID system.
     """
+    from src.core.pipeline.constants import is_rtl_language
+    rtl_snippet = ""
+    if is_rtl_language(renpy_lang):
+        rtl_snippet = '''
+    try:
+        if hasattr(config, 'rtl'):
+            config.rtl = True
+        for _rs in ('default', 'say_dialogue', 'say_label', 'input', 'button_text', 'choice_button_text'):
+            _rst = getattr(style, _rs, None)
+            if _rst:
+                try: _rst.language = 'unicode'
+                except Exception: pass
+                try: _rst.reading_order = 'wrtl'
+                except Exception: pass
+    except Exception:
+        pass
+'''
     return f'''# RenLocalizer Native Runtime Hook v1.0
 # Lightweight version for Native TLID output mode.
 # Dialogues handled by Ren'Py natively — this hook only covers UI text.
@@ -279,7 +296,7 @@ init -999 python:
         _rl_load_translations()
     
     config.start_callbacks.append(_rl_on_language_change) if _rl_on_language_change not in config.start_callbacks else None
-'''
+{rtl_snippet}'''
 
 
 def render_runtime_hook_dynamic(renpy_lang: str) -> str:
@@ -495,11 +512,13 @@ init -999 python:
         'is', 'it', 'of', 'on', 'or', 'so', 'the', 'then', 'to', 'with'
     ))
     _rl_rtl_languages = set((
-        'arabic', 'farsi', 'persian', 'hebrew', 'urdu', 'pashto', 'sindhi'
+        'arabic', 'farsi', 'persian', 'hebrew', 'urdu', 'pashto', 'sindhi',
+        'ar', 'fa', 'he', 'ur', 'ps', 'sd'
     ))
     _rl_rtl_style_names = (
         'default', 'say_dialogue', 'say_label', 'input', 'button_text',
         'choice_button_text', 'history_text', 'namebox', 'notify_text',
+        'confirm_prompt_text', 'navigation_button_text', 'quick_button_text',
     )
     
     _renlocalizer_debug = False
@@ -568,10 +587,10 @@ init -999 python:
                     try:
                         _style = getattr(style, _style_name, None)
                         if _style is not None:
-                            if hasattr(_style, 'language'):
-                                _style.language = 'unicode'
-                            if hasattr(_style, 'reading_order'):
-                                _style.reading_order = 'wrtl'
+                            try: _style.language = 'unicode'
+                            except Exception: pass
+                            try: _style.reading_order = 'wrtl'
+                            except Exception: pass
                     except Exception:
                         pass
             else:
@@ -1352,6 +1371,12 @@ init 999 python:
     
     _rl_prev_replace_text = config.replace_text
     config.replace_text = _rl_replace_text
+    
+    # Late-binding RTL text direction enforcement (after gui.init and custom screens build styles)
+    try:
+        _rl_apply_runtime_language_direction(_rl_get_active_language())
+    except Exception:
+        pass
     
     # Optional: Install screen harvesting on interact callbacks
     if hasattr(config, 'start_interact_callbacks'):

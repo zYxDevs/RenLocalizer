@@ -323,6 +323,12 @@ class TranslationSettings:
     # "generic" -> force generic behaviour (system prompt, default sampling)
     # "hy_mt2"  -> force the Hy-MT2 profile regardless of model name
     ai_model_profile: str = "auto"
+    # AI Batch Format & Scene Translation Mode (v2.8.15)
+    # "scene" -> Context-aware screenplay script format with speaker tags (recommended for VN dialogue)
+    # "json"  -> Structured JSON object matching schema
+    # "xml"   -> Traditional XML element grouping
+    ai_batch_format: str = "scene"
+    ai_scene_batch_size: int = 15  # Dialogues per scene block (5-50)
     # Aggressive Translation Retry: Retry unchanged translations with Lingva/alt endpoints (slower but more thorough)
     aggressive_retry_translation: bool = (
         False  # Default off for speed (user can enable)
@@ -410,6 +416,7 @@ class TranslationSettings:
         self.ai_timeout = _safe_int(self.ai_timeout, 60, 5, 600)
         self.ai_max_tokens = _safe_int(self.ai_max_tokens, 4096, 64, 32768)
         self.ai_batch_size = _safe_int(self.ai_batch_size, 50, 1, MAX_AI_BATCH_SIZE)
+        self.ai_scene_batch_size = _safe_int(self.ai_scene_batch_size, 15, 5, 50)
         self.ai_retry_count = _safe_int(self.ai_retry_count, 3, 0, 20)
         self.ai_concurrency = _safe_int(self.ai_concurrency, 1, 1, 20)
         self.ai_request_delay = _safe_float(self.ai_request_delay, 1.5, 0.0, 60.0)
@@ -441,6 +448,8 @@ class TranslationSettings:
             self.gemini_safety_settings = "BLOCK_NONE"
         if self.ai_model_profile not in ("auto", "generic", "hy_mt2"):
             self.ai_model_profile = "auto"
+        if self.ai_batch_format not in ("scene", "json", "xml"):
+            self.ai_batch_format = "scene"
         extraction_mode = str(self.extraction_mode).strip().lower() or "balanced"
         if extraction_mode not in EXTRACTION_MODE_THRESHOLDS:
             extraction_mode = "balanced"

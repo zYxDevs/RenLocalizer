@@ -135,6 +135,8 @@ class AppBackend(QObject):
     aiCustomSystemPromptChanged = pyqtSignal()
     aiModelProfileChanged = pyqtSignal()
     hyMt2StatusChanged = pyqtSignal()
+    aiBatchFormatChanged = pyqtSignal()
+    aiSceneBatchSizeChanged = pyqtSignal()
     outputModeChanged = pyqtSignal()
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
@@ -229,6 +231,8 @@ class AppBackend(QObject):
         self.settings.on("ai_custom_system_prompt", lambda: self.aiCustomSystemPromptChanged.emit())
         self.settings.on("ai_model_profile", lambda: self.aiModelProfileChanged.emit())
         self.settings.on("ai_model_profile", lambda: self.hyMt2StatusChanged.emit())
+        self.settings.on("ai_batch_format", lambda: self.aiBatchFormatChanged.emit())
+        self.settings.on("ai_scene_batch_size", lambda: self.aiSceneBatchSizeChanged.emit())
         self.settings.on("output_mode", lambda: self.outputModeChanged.emit())
         self.settings.on("language", lambda lang_code: self.languageChanged.emit(lang_code))
         self.settings.on("theme", lambda theme: self.themeChanged.emit(theme))
@@ -344,7 +348,19 @@ class AppBackend(QObject):
         if previous is not None and previous is not translator and hasattr(previous, "close"):
             try:
                 import asyncio
-                asyncio.run(previous.close())
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+
+                if running_loop is not None and running_loop.is_running():
+                    running_loop.create_task(previous.close())
+                else:
+                    temp_loop = asyncio.new_event_loop()
+                    try:
+                        temp_loop.run_until_complete(previous.close())
+                    finally:
+                        temp_loop.close()
             except Exception:
                 pass  # Old instance will be GC'd; never block translation on this
         self.translation_manager.add_translator(engine, translator)
@@ -659,6 +675,33 @@ class AppBackend(QObject):
     def hyMt2Active(self) -> bool:
         """True when the Hy-MT2 profile is effectively in use (forced or detected)."""
         return self.settings.is_hy_mt2_active()
+
+    # ── AI Batch Format & Scene Translation Mode Properties ───────────────
+
+    @pyqtProperty(str, notify=aiBatchFormatChanged)
+    def aiBatchFormat(self) -> str:
+        return self.settings.get_ai_batch_format()
+
+    @aiBatchFormat.setter
+    def aiBatchFormat(self, val: str) -> None:
+        self.settings.set_ai_batch_format(val)
+
+    @pyqtProperty(int, notify=aiSceneBatchSizeChanged)
+    def aiSceneBatchSize(self) -> int:
+        return self.settings.get_ai_scene_batch_size()
+
+    @aiSceneBatchSize.setter
+    def aiSceneBatchSize(self, val: int) -> None:
+        self.settings.set_ai_scene_batch_size(val)
+
+    # Alias for QML convenience
+    @pyqtProperty(int, notify=aiSceneBatchSizeChanged)
+    def aiSceneSize(self) -> int:
+        return self.settings.get_ai_scene_batch_size()
+
+    @aiSceneSize.setter
+    def aiSceneSize(self, val: int) -> None:
+        self.settings.set_ai_scene_batch_size(val)
 
     # ── LibreTranslate Properties ─────────────────────────────────────────
 
@@ -1081,14 +1124,10 @@ class AppBackend(QObject):
 
         self._is_translating = True
         self.translationStarted.emit()
-
-        if self._tl_mode:
-            threading.Thread(target=self._run_tl_retranslation, daemon=True).start()
-        else:
-            self._start_pipeline_translation()
+        self._start_pipeline_translation()
 
     def _start_pipeline_translation(self) -> None:
-        """Normal pipeline tabanlı çeviriyi başlatır."""
+        """Pipeline tabanlı çeviriyi başlatır (normal veya TL modu)."""
         try:
             # Rebuild the selected engine's translator from the CURRENT config.
             # Translator instances are created at app startup and cached in the
@@ -1099,8 +1138,9 @@ class AppBackend(QObject):
 
             # Pipeline oluştur ve yapılandır
             self.pipeline = TranslationPipeline(self.config, self.translation_manager)
+            target_path = self._tl_source_path if self._tl_mode else self._project_path
             self.pipeline.configure(
-                game_exe_path=self._project_path,
+                game_exe_path=target_path,
                 target_language=self._target_language,
                 source_language="auto",
                 engine=self._selected_engine,
@@ -1108,6 +1148,7 @@ class AppBackend(QObject):
                 use_proxy=self.config.proxy_settings.enabled,
                 include_deep_scan=self.config.translation_settings.enable_deep_scan,
                 include_rpyc=self.config.translation_settings.enable_rpyc_reader,
+                is_tl_mode=self._tl_mode,
             )
 
             # Pipeline sinyallerini bu backend'e bağla
@@ -1132,232 +1173,40 @@ class AppBackend(QObject):
             self._is_translating = False
             self.translationFinished.emit(False, str(exc))
 
-    @pyqtSlot()
-    def stopTranslation(self) -> None:
-        """Çeviri pipeline'ını durdurur."""
-        if self._tl_mode:
-            # TL retranslation modunda thread'i durdur
-            self._tl_stop_requested = True
-            self.logMessage.emit(
-                "warning", self._t("log_stop_requested", "⏹ Stop request sent...")
-            )
-        elif self.pipeline and self._is_translating:
+    def stop_translation(self, wait_ms: int = 0) -> None:
+        """Stops the translation pipeline and optionally waits for worker thread termination."""
+        if self.pipeline and self._is_translating:
             self.pipeline.stop()
             self.logMessage.emit(
                 "warning", self._t("log_stop_requested", "⏹ Stop request sent...")
             )
+            if wait_ms > 0 and self.pipeline_worker and self.pipeline_worker.isRunning():
+                self.pipeline_worker.wait(wait_ms)
 
-    def _run_tl_retranslation(self) -> None:
-        """
-        TL retranslation modu: Ren'Py SDK'nın oluşturduğu tl/ klasörünü
-        okur, boş çevirileri Google Translate ile doldurur ve in-place kaydeder.
+    @pyqtSlot()
+    def stopTranslation(self) -> None:
+        """Çeviri pipeline'ını durdurur."""
+        self.stop_translation(wait_ms=0)
 
-        Bu metot bir arka plan thread'inde çalışır.
-        """
-        self._tl_stop_requested = False
-        tl_parser = TLParser()
-        total_translated = 0
-        total_skipped = 0
-        total_saved = 0
-        total_failed = 0
-
+    @pyqtSlot()
+    def shutdown(self, timeout_ms: int = 3000) -> None:
+        """Safely persists settings and stops worker thread on application exit."""
         try:
-            # ── 1. Klasörü tara ──────────────────────────────────────────
-            tl_path = self._tl_source_path
-            lang = self._target_language
-
-            self.stageChanged.emit(
-                "parsing", self._t("stage_parsing", "📂 Scanning TL Files")
-            )
-            self.logMessage.emit("info", f"🔍 Scanning TL folder: {tl_path}")
-
-            # parse_directory: tl/lang/ klasörünü parse et.
-            # Eğer kullanıcı zaten tl/lang/ içindeyse bu da desteklenir.
-            tl_files = tl_parser.parse_directory(tl_path, lang)
-
-            if not tl_files:
-                # Fallback: kullanıcı doğrudan tl/lang/ klasörünü seçti
-                # parse_directory, lang alt klasörünü aramaya çalışır;
-                # ama tl_path=tl/lang/ ise zaten bu klasörü dener.
-                # İkinci deneme: tl_path'i doğrudan parse etmeye çalış.
-                import os
-
-                rpy_files = []
-                for root, _, fnames in os.walk(tl_path):
-                    for fname in fnames:
-                        if fname.lower().endswith(".rpy"):
-                            rpy_files.append(os.path.join(root, fname))
-                if rpy_files:
-                    for fpath in rpy_files:
-                        tf = tl_parser.parse_file(fpath)
-                        if tf:
-                            tl_files.append(tf)
-
-            if not tl_files:
-                self.logMessage.emit(
-                    "error",
-                    self._t("log_no_rpy_files", "❌ No .rpy files found in TL folder."),
-                )
-                self._is_translating = False
-                self.translationFinished.emit(False, "TL dosyası bulunamadı.")
-                return
-
-            stats = get_translation_stats(tl_files)
-            total_entries = stats["total"]
-            untranslated = stats["untranslated"]
-
-            self.logMessage.emit(
-                "info",
-                f"📊 {len(tl_files)} dosya, {total_entries} giriş, "
-                f"{untranslated} çeviri bekliyor, {stats['translated']} zaten çevrilmiş.",
-            )
-
-            if untranslated == 0:
-                self.logMessage.emit(
-                    "success",
-                    self._t(
-                        "log_all_translated", "✅ All translations already completed."
-                    ),
-                )
-                self.statsReady.emit(total_entries, stats["translated"], 0)
-                self.completionSummary.emit(
-                    "✅ Çeviri Tamamlandı",
-                    "Tüm girişler zaten çevrilmiş durumda.",
-                    tl_path,
-                    "",
-                    0,
-                )
-                self._is_translating = False
-                self.translationFinished.emit(True, "Zaten çevrilmiş.")
-                return
-
-            # ── 2. Çeviri ────────────────────────────────────────────────
-            self.stageChanged.emit("translating", "🌐 Translating")
-
-            google = self.translation_manager.translators.get(TranslationEngine.GOOGLE)
-            if not google:
-                self.logMessage.emit(
-                    "error",
-                    self._t("log_google_not_ready", "❌ Google Translate not ready."),
-                )
-                self._is_translating = False
-                self.translationFinished.emit(False, "Google Translate hazır değil.")
-                return
-
-            processed = 0
-            for tl_file in tl_files:
-                if self._tl_stop_requested:
-                    self.logMessage.emit(
-                        "warning",
-                        self._t("log_translation_stopped", "⏹ Translation stopped."),
-                    )
-                    break
-
-                untranslated_entries = tl_file.get_untranslated()
-                if not untranslated_entries:
-                    continue
-
-                # Batch translate
-                from src.core.translator import (
-                    TranslationEngine,
-                    TranslationRequest,
-                )
-
-                requests = [
-                    TranslationRequest(
-                        text=e.original_text,
-                        source_lang="auto",
-                        target_lang=lang,
-                        engine=TranslationEngine.GOOGLE,
-                    )
-                    for e in untranslated_entries
-                ]
-                try:
-                    results = self._run_translate_batch_sync(google, requests)
-                except Exception as exc:
-                    self.logMessage.emit(
-                        "warning",
-                        f"⚠️ Translation error ({os.path.basename(tl_file.file_path)}): {exc}",
-                    )
-                    total_failed += len(untranslated_entries)
-                    processed += len(untranslated_entries)
-                    self.progressChanged.emit(
-                        processed,
-                        untranslated,
-                        f"Hata: {os.path.basename(tl_file.file_path)}",
-                    )
-                    continue
-
-                # ID → translated_text sözlüğü oluştur
-                translations: dict[str, str] = {}
-                for entry, result in zip(untranslated_entries, results):
-                    translated = (
-                        getattr(result, "translated_text", None)
-                        or getattr(result, "text", None)
-                        or ""
-                    )
-                    if translated:
-                        translations[entry.translation_id] = translated
-                        translations[entry.original_text] = translated  # fallback key
-                        total_translated += 1
-                    else:
-                        total_skipped += 1
-
-                processed += len(untranslated_entries)
-                self.progressChanged.emit(
-                    processed,
-                    untranslated,
-                    f"Çevriliyor: {os.path.basename(tl_file.file_path)}",
-                )
-
-                # ── 3. Kaydet ────────────────────────────────────────────
-                if translations:
-                    success = tl_parser.save_translations(tl_file, translations)
-                    if success:
-                        total_saved += 1
-                    else:
-                        self.logMessage.emit(
-                            "warning", f"⚠️ Save failed: {tl_file.file_path}"
-                        )
-                        total_failed += 1
-
-            # ── 4. Özet ──────────────────────────────────────────────────
-            self.stageChanged.emit(
-                "completed", self._t("stage_completed", "✅ Completed")
-            )
-            self.statsReady.emit(
-                total_entries,
-                stats["translated"] + total_translated,
-                max(0, untranslated - total_translated),
-            )
-
-            msg = (
-                f"{total_translated} giriş çevrildi, "
-                f"{stats['translated']} zaten çevriliydi, "
-                f"{total_saved}/{len(tl_files)} dosya kaydedildi."
-            )
-            self.logMessage.emit("success", f"✅ TL Retranslation completed: {msg}")
-            self.completionSummary.emit(
-                "✅ TL Retranslation Tamamlandı", msg, tl_path, "", 0
-            )
-            self.send_desktop_notification(
-                "desktop_notify_complete_title",
-                "desktop_notify_complete_msg",
-                is_error=False,
-            )
-            self._is_translating = False
-            self.translationFinished.emit(True, msg)
-
+            self.persistSettingsOnExit()
         except Exception as exc:
-            self.logger.exception("[AppBackend] _run_tl_retranslation error")
-            self.logMessage.emit("error", f"❌ TL retranslation error: {exc}")
-            self.send_desktop_notification(
-                "desktop_notify_error_title",
-                "desktop_notify_error_msg",
-                is_error=True,
-            )
-            self._is_translating = False
-            self.translationFinished.emit(False, str(exc))
+            self.logger.warning(f"[AppBackend] persistSettingsOnExit on shutdown failed: {exc}")
+
+        if self.pipeline and self._is_translating:
+            try:
+                self.pipeline.stop()
+            except Exception as exc:
+                self.logger.warning(f"[AppBackend] pipeline.stop on shutdown failed: {exc}")
+
+        if self.pipeline_worker and self.pipeline_worker.isRunning():
+            self.logger.info(f"[AppBackend] Waiting for pipeline worker to finish (timeout={timeout_ms}ms)...")
+            finished = self.pipeline_worker.wait(timeout_ms)
+            if not finished:
+                self.logger.warning("[AppBackend] Pipeline worker did not finish in time during shutdown.")
 
     # ── Pipeline Signal Handlers ─────────────────────────────────────────
 
@@ -1554,12 +1403,18 @@ class AppBackend(QObject):
                 if manual:
                     self.logMessage.emit("info", f"ℹ️ {msg}")
                 self.updateCheckFinished.emit(False, msg)
+        except RuntimeError as exc:
+            # Underlying C++ object was destroyed while thread was finishing
+            self.logger.debug(f"[AppBackend] Update check thread aborted due to object teardown: {exc}")
         except Exception as exc:
-            err_msg = self.config.get_ui_text(
-                "log_update_check_failed", "Update check failed: {error}"
-            ).replace("{error}", str(exc))
-            self.logMessage.emit("error", f"❌ {err_msg}")
-            self.updateCheckFinished.emit(False, f"Update Check Failed: {exc}")
+            try:
+                err_msg = self.config.get_ui_text(
+                    "log_update_check_failed", "Update check failed: {error}"
+                ).replace("{error}", str(exc))
+                self.logMessage.emit("error", f"❌ {err_msg}")
+                self.updateCheckFinished.emit(False, f"Update Check Failed: {exc}")
+            except RuntimeError:
+                pass
 
     # ── 12. ARAÇ KUTUSU (TOOLBOX) SLOTLARI ───────────────────────────────
     @pyqtSlot()
@@ -1585,11 +1440,27 @@ class AppBackend(QObject):
             target_lang = getattr(
                 self.config.translation_settings, "target_language", "turkish"
             )
-            check_font_for_project(self._project_path, target_lang)
-            self.logMessage.emit(
-                "success",
-                self._t("log_font_check_done", "✅ Font check completed successfully."),
-            )
+            summary = check_font_for_project(self._project_path, target_lang)
+            total = summary.get("fonts_checked", 0)
+            compat = summary.get("compatible_fonts", 0)
+            incompat = summary.get("incompatible_fonts", 0)
+            suggestions = summary.get("suggestions", [])
+            sug_str = f" Recommended: {', '.join(suggestions[:3])}" if suggestions else ""
+            if incompat > 0:
+                self.logMessage.emit(
+                    "warning",
+                    f"⚠️ Font check: {total} font(s) scanned — {incompat} incompatible (missing glyphs).{sug_str}",
+                )
+            elif total > 0:
+                self.logMessage.emit(
+                    "success",
+                    f"✅ Font check: {total} font(s) scanned — all {compat} fonts support '{target_lang}'.",
+                )
+            else:
+                self.logMessage.emit(
+                    "info",
+                    f"ℹ️ No custom fonts found in game folder. Ren'Py will use its default font.{sug_str}",
+                )
         except Exception as e:
             self.logMessage.emit("error", f"❌ Font helper error: {e}")
 
@@ -1640,24 +1511,28 @@ class AppBackend(QObject):
 
     def _run_renpy_lint_thread(self) -> None:
         try:
-            from src.tools.renpy_lint import run_renpy_lint
+            from src.tools.renpy_lint import lint_translation_output
 
             sdk_path = self.config.app_settings.renpy_sdk_path
-            report = run_renpy_lint(self._project_path, sdk_path=sdk_path)
+            tl_dir = os.path.join(self._project_path, "game", "tl")
+            target_path = tl_dir if os.path.isdir(tl_dir) else self._project_path
+            report = lint_translation_output(
+                target_path,
+                try_engine_lint=bool(sdk_path),
+                game_dir=self._project_path,
+                sdk_path=sdk_path,
+            )
             if report is None:
-                self.logMessage.emit(
-                    "warning",
-                    "⚠️ Ren'Py SDK not found — lint could not run. Make sure Ren'Py is installed.",
-                )
+                self.logMessage.emit("warning", "⚠️ Lint could not run on the selected project.")
             elif report.ok:
                 self.logMessage.emit(
                     "success",
-                    f"✅ Lint passed: {report.files_scanned} files, {report.translate_blocks} blocks, {report.old_new_pairs} pairs.",
+                    f"✅ Lint passed: {report.files_scanned} files scanned, {report.translate_blocks} translate blocks, {report.old_new_pairs} old/new pairs. No syntax or indentation errors found.",
                 )
             else:
                 self.logMessage.emit(
                     "warning",
-                    f"⚠️ Lint: {report.errors} errors, {report.warnings} warnings\n{report.summary()}",
+                    f"⚠️ Lint findings: {report.errors} error(s), {report.warnings} warning(s)\n{report.summary()}",
                 )
         except Exception as e:
             self.logMessage.emit("error", f"❌ Ren'Py Lint error: {e}")
@@ -1766,14 +1641,22 @@ class AppBackend(QObject):
                 TranslationRequest,
             )
 
-            translator = GoogleTranslator(self.config)
+            from src.tools.font_injector import _normalize_lang_code
+
+            ts = getattr(self.config, "translation_settings", None)
+            raw_src = getattr(ts, "source_language", "auto") if ts else "auto"
+            raw_tgt = getattr(ts, "target_language", "turkish") if ts else "turkish"
+            src_lang = _normalize_lang_code(raw_src) if raw_src != "auto" else "auto"
+            tgt_lang = _normalize_lang_code(raw_tgt)
+
+            translator = GoogleTranslator(config_manager=self.config)
             count = 0
             for key in empty_keys:
                 try:
                     request = TranslationRequest(
                         text=key,
-                        source_lang="en",
-                        target_lang="tr",
+                        source_lang=src_lang,
+                        target_lang=tgt_lang,
                         engine=TranslationEngine.GOOGLE,
                     )
                     results = self._run_translate_batch_sync(translator, [request])

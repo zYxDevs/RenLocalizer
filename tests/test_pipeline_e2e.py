@@ -37,10 +37,13 @@ def minimal_game(tmp_path):
     return fake_exe
 
 
+from src.core.translator import GoogleTranslator
+
+
 @pytest.fixture
 def mock_translator():
     """Fixtured mock translator that returns predictable translations."""
-    def _translate_batch(requests):
+    async def _translate_batch(requests):
         return [
             TranslationResult(
                 original_text=r.text,
@@ -101,7 +104,7 @@ class TestPipelineE2E:
 
         pipeline.finished.connect(on_finished)
 
-        with patch.object(translation_manager, "translate_batch", side_effect=mock_translator):
+        with patch.object(GoogleTranslator, "translate_batch", side_effect=mock_translator):
             with patch.object(pipeline, "_run_translate_command", side_effect=mock_translate_command):
                 pipeline.run()
 
@@ -146,3 +149,55 @@ class TestPipelineE2E:
         result = result_holder[0]
         # Should not crash; may complete with warning or fail early
         assert isinstance(result, PipelineResult)
+
+    def test_pipeline_tl_mode_execution(self, tmp_path, mock_translator):
+        """Pipeline should route to translate_existing_tl when is_tl_mode is True."""
+        tl_dir = tmp_path / "game" / "tl" / "turkish"
+        tl_dir.mkdir(parents=True, exist_ok=True)
+        (tl_dir / "script.rpy").write_text(
+            '# game/script.rpy:2\n'
+            'translate turkish start_636ae3f5:\n'
+            '    # e "Hello world!"\n'
+            '    e ""\n',
+            encoding="utf-8"
+        )
+
+        config = ConfigManager()
+        translation_manager = TranslationManager(config_manager=config)
+        pipeline = TranslationPipeline(config=config, translation_manager=translation_manager)
+
+        pipeline.configure(
+            game_exe_path=str(tl_dir),
+            target_language="turkish",
+            source_language="en",
+            engine=TranslationEngine.GOOGLE,
+            auto_unren=False,
+            is_tl_mode=True,
+        )
+
+        result_holder = []
+        pipeline.finished.connect(lambda r: result_holder.append(r))
+
+        with patch.object(GoogleTranslator, "translate_batch", side_effect=mock_translator):
+            pipeline.run()
+
+        assert len(result_holder) == 1
+        result = result_holder[0]
+        assert result.success, f"TL mode retranslation should succeed: {result.message}"
+        assert result.stage == PipelineStage.COMPLETED
+
+    def test_extract_raw_mapping_case_insensitive_conflict_skipped(self):
+        """Ensure case-insensitive conflicts are skipped from mapping."""
+        from types import SimpleNamespace
+        from src.core.pipeline.saving import _extract_raw_mapping
+
+        entry1 = SimpleNamespace(original_text="Hello", translated_text="Merhaba")
+        entry2 = SimpleNamespace(original_text="hello", translated_text="Selam")
+        tfile = SimpleNamespace(file_path="script.rpy", entries=[entry1, entry2])
+
+        mapping, skipped_corrupt, skipped_counts, _ = _extract_raw_mapping([tfile])
+        assert "Hello" in mapping
+        assert mapping["Hello"] == "Merhaba"
+        assert "hello" not in mapping
+        assert skipped_corrupt == 1
+        assert skipped_counts["case_insensitive_conflict"] == 1

@@ -82,6 +82,7 @@ hidden_imports += collect_submodules('yaml')
 hidden_imports += collect_submodules('certifi')
 hidden_imports += collect_submodules('openai')
 hidden_imports += collect_submodules('google.genai')
+hidden_imports += collect_submodules('fontTools')
 # Pandas submodules are too heavy (includes tests, matplotlib, etc). 
 # Basic pandas import is usually enough or handled by auto-analysis.
 # If needed, add only specific submodules manually.

@@ -1293,5 +1293,13 @@
   "cache_cleared_toast": "Translation cache cleared.",
   "engine_local_llm": "🖥️ Local LLM (Ollama / LM Studio)",
   "source_lang_auto": "🤖 Auto-detect",
-  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags..."
+  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags...",
+  "ai_mode_label": "翻译模式",
+  "ai_mode_scene": "场景/剧本模式 (上下文感知)",
+  "ai_mode_json": "标准结构化模式 (JSON)",
+  "ai_mode_xml": "传统分组模式 (XML)",
+  "ai_scene_size_label": "场景块大小 (行)",
+  "ai_mode_scene_desc": "💡 以剧本流形式发送对话。最能保留角色口吻、性别一致性与上下文（视觉小说推荐）。",
+  "ai_mode_json_desc": "💡 以键值对形式发送文本。确保零行偏移与严格的数据结构；非常适合菜单与系统界面文本。",
+  "ai_mode_xml_desc": "💡 使用XML标签包裹文本。对于不擅长生成标准JSON的小型或旧款模型来说是最稳妥的选择。"
 }

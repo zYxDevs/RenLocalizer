@@ -60,21 +60,19 @@ class TestSafeLoadsRpaIndex:
         result = _safe_loads_rpa_index(data)
         assert result == index
 
-    def test_blocks_malicious_pickle_via_restricted_path(self):
-        # A pickle that would execute os.system must NOT run through the
-        # restricted unpickler — it must raise before resolving the global.
+    def test_blocks_malicious_pickle_via_safe_loads(self):
+        # A pickle that would execute os.system must NOT be executed —
+        # _safe_loads_rpa_index must strictly raise UnpicklingError without fallback.
         class Evil:
             def __reduce__(self):
                 return (os.system, ("echo pwned",))
 
         payload = pickle.dumps(Evil())
-        with pytest.raises(pickle.UnpicklingError):
-            _RestrictedRPAUnpickler(io.BytesIO(payload)).load()
+        with pytest.raises(pickle.UnpicklingError, match="Disallowed global"):
+            _safe_loads_rpa_index(payload)
 
-    def test_fallback_preserves_compatibility(self):
-        # _safe_loads_rpa_index should fall back to standard pickle when the
-        # restricted path rejects a type, so legitimate archives still work.
-        index = {"a.txt": [(0, 10, b"")]}
+    def test_loads_complex_legitimate_index(self):
+        index = {"archive/sub/file.rpy": [(1024, 2048, b"prefix_key")]}
         assert _safe_loads_rpa_index(pickle.dumps(index)) == index
 
 
@@ -138,9 +136,22 @@ class TestExtractArchive:
         parser = RPAParser()
         assert parser.extract_archive(tmp_path / "nope.rpa", tmp_path) is False
 
-    def test_unknown_format_returns_false(self, tmp_path):
-        bad = tmp_path / "bad.rpa"
-        bad.write_bytes(b"NOTANRPA\x00\x01\x02")
+    def test_rpa_path_traversal_blocked(self, tmp_path):
+        """Zip Slip / path traversal in RPA file names must be blocked."""
+        files = {
+            "../../escaped_secret.txt": b"MALICIOUS_PAYLOAD",
+            "safe_folder/game.rpy": b"SAFE_CONTENT",
+        }
+        rpa_path = _build_rpa3(tmp_path, files)
+        out_dir = tmp_path / "extracted_game"
+        escaped_file = tmp_path / "escaped_secret.txt"
+
         parser = RPAParser()
-        assert parser.extract_archive(bad, tmp_path / "out") is False
+        assert parser.extract_archive(rpa_path, out_dir) is True
+
+        # Malicious file outside out_dir must NOT exist
+        assert not escaped_file.exists()
+        # Safe file must exist
+        assert (out_dir / "safe_folder" / "game.rpy").exists()
+        assert (out_dir / "safe_folder" / "game.rpy").read_bytes() == b"SAFE_CONTENT"
 

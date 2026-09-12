@@ -201,33 +201,51 @@ class TestGeminiTranslator:
             with pytest.raises(ImportError, match="google-genai"):
                 GeminiTranslator(api_key="test-key")
 
-    def test_instantiation_with_mocked_genai(self):
+    def test_instantiation_with_google_genai_client(self):
+        import src.core.ai_translator as ai_mod
         mock_genai = MagicMock()
-        mock_genai.types = MagicMock()
-        mock_genai.types.GenerationConfig = MagicMock()
+        mock_genai.Client = MagicMock()
+
+        with patch.object(ai_mod, "_GEMINI_AVAILABLE", True), \
+             patch.object(ai_mod, "_GEMINI_MODE", "google_genai"), \
+             patch.object(ai_mod, "genai", mock_genai, create=True):
+            t = ai_mod.GeminiTranslator(api_key="test-key")
+            mock_genai.Client.assert_called_once_with(api_key="test-key")
+            assert t._engine == TranslationEngine.GEMINI
+
+    def test_instantiation_with_legacy_genai(self):
+        mock_genai = MagicMock()
         mock_genai.GenerativeModel = MagicMock()
         mock_genai.configure = MagicMock()
 
         import src.core.ai_translator as ai_mod
         with patch.object(ai_mod, "_GEMINI_AVAILABLE", True), \
+             patch.object(ai_mod, "_GEMINI_MODE", "legacy_generativeai"), \
              patch.object(ai_mod, "genai", mock_genai, create=True):
             t = ai_mod.GeminiTranslator(api_key="test-key")
             mock_genai.configure.assert_called_once_with(api_key="test-key")
             assert t._engine == TranslationEngine.GEMINI
 
     def test_get_supported_languages(self):
-        mock_genai = MagicMock()
-        mock_genai.GenerativeModel = MagicMock()
-        mock_genai.configure = MagicMock()
-
         import src.core.ai_translator as ai_mod
+        mock_genai = MagicMock()
+        mock_genai.Client = MagicMock()
+
         with patch.object(ai_mod, "_GEMINI_AVAILABLE", True), \
+             patch.object(ai_mod, "_GEMINI_MODE", "google_genai"), \
              patch.object(ai_mod, "genai", mock_genai, create=True):
             t = ai_mod.GeminiTranslator(api_key="test-key")
             langs = t.get_supported_languages()
             assert isinstance(langs, dict)
             assert "tr" in langs
             assert "en" in langs
+
+    def test_real_installed_sdk_instantiation(self):
+        """Verify that GeminiTranslator instantiates without error using the actual installed SDK."""
+        from src.core.ai_translator import GeminiTranslator, _GEMINI_AVAILABLE
+        if _GEMINI_AVAILABLE:
+            t = GeminiTranslator(api_key="fake-test-key")
+            assert t._engine == TranslationEngine.GEMINI
 
 
 # ─────────────────────────────────────────────────────────────────────────────

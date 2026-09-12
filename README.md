@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Lord0fTurk/RenLocalizer/releases"><img alt="Latest Release" src="https://img.shields.io/badge/Release-v2.8.14-blue?style=for-the-badge&logo=github"></a>
+  <a href="https://github.com/Lord0fTurk/RenLocalizer/releases"><img alt="Latest Release" src="https://img.shields.io/badge/Release-v2.8.15-blue?style=for-the-badge&logo=github"></a>
   <a href="https://www.patreon.com/cw/LordOfTurk"><img alt="Support on Patreon" src="https://img.shields.io/badge/Support-Patreon-ff424d?style=for-the-badge&logo=patreon"></a>
 </p>
 
@@ -59,7 +59,21 @@ Pick the engine that best fits your needs — from 100% free cloud translation t
 | ⚡ **DeepSeek (V3 / R1)** | API Key | Very Low Cost | Outstanding translation quality with OpenAI-compatible API. |
 | 💎 **Google Gemini** | API Key | Free Tier / Paid | High-speed, context-rich translations with large context windows. |
 | 🏠 **Local LLM (Ollama / LM Studio)** | Local App | **100% Free** | Fully offline, private, uncensored translation (e.g. Llama 3, Qwen 2.5). |
+| 🎯 **Tencent Hy-MT2** | Ollama / LM Studio | **100% Free** | Specialized translation profile with official model-card sampling recipe. |
 | 🐳 **LibreTranslate** | Self-hosted | Free | Self-hosted local Docker translation service. |
+
+---
+
+## 🎭 Translation Modes (Batch Architecture)
+
+When using AI engines (Cloud API or Local LLM), RenLocalizer offers 3 distinct batching modes:
+
+- 🎭 **Scene / Screenplay Mode (Context-Aware — Recommended):**  
+  Presents dialogue lines in a natural theatre screenplay flow with speaker attribution (`Alice: "..."`). The AI grasps who is speaking to whom, maintaining consistent character tone, gender agreement, and relationship dynamics.
+- 📦 **Standard Structured Mode (JSON):**  
+  Packages lines into strict key-value pairs (`{"id": "text"}`). Guarantees zero line drift and high structural integrity. Ideal for menus, settings, and UI strings.
+- 📄 **Legacy Grouping Mode (XML):**  
+  Wraps texts in `<item id="N">...</item>` tags. Highly resilient for smaller or older local models (e.g. 3B/7B) that may struggle to format valid JSON.
 
 ---
 
@@ -70,6 +84,8 @@ Translating Ren'Py visual novels with standard translation tools usually crashes
 * 🔒 **SyntaxGuard:** Ren'Py codes like `{b}`, `{color=...}`, and variables like `[player_name]` are strictly isolated before translation and safely restored afterwards.
 * 🚫 **No Duplicate Key Crashes:** Automatically tracks existing translations and native IDs, preventing Ren'Py 7.5+ / 8.x duplicate string fatal errors.
 * 📦 **Deep Binary Scan (.rpyc & .rpa):** Extracts hidden strings directly from compiled `.rpyc` files and unpacks `.rpa` archives automatically.
+* 🌐 **Full RTL & BiDi Support:** Automatic layout and reading direction (`wrtl`) handling for Arabic, Persian, Hebrew, and Urdu without altering LTR games.
+* 🧰 **Integrated Toolbox:** Standalone Ren'Py syntax & indentation linter, automated OpenType font injection, font compatibility scanner, and glossary extractor.
 * 🚀 **Smart Runtime Hook:** Injects a lightweight `init -999 python:` hook for dynamic on-the-fly string translation and instant language switching in-game.
 
 ---

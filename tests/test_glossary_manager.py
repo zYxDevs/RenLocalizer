@@ -31,3 +31,82 @@ def test_apply_glossary():
     
     # Text replacement test
     assert GlossaryManager.apply_glossary("Press Start to play.", glossary) == "Press Başla to play."
+
+
+def test_stopwords_skipped_in_protect_terms():
+    """Verify that common English stopwords are NOT protected as identity tokens."""
+    glossary = {
+        "To": "To",
+        "Her": "Her",
+        "An": "An",
+        "Man": "Man",
+        "Nurse": "Nurse",
+        "Alice": "Alice",  # Real character name, must be protected
+    }
+    text = "We need to leave, this is her room. An old nurse told the man. Alice stayed."
+    protected, placeholders = GlossaryManager.protect_terms(text, glossary, xml_mode=False)
+
+    # Only Alice should be protected
+    assert len(placeholders) == 1
+    assert "Alice" not in protected
+    # Words like "to", "her", "An", "nurse", "man" must NOT have been replaced by placeholders
+    assert "to leave" in protected
+    assert "her room" in protected
+    assert "An old" in protected
+    assert "nurse" in protected
+    assert "man" in protected
+
+
+def test_short_terms_case_sensitivity():
+    """Verify short terms (len <= 3) are matched strictly case-sensitively."""
+    glossary = {"HP": "Sağlık"}
+    text = "High HP character with low hp value."
+    protected, placeholders = GlossaryManager.protect_terms(text, glossary, xml_mode=False)
+    
+    # Only uppercase HP should be protected
+    assert len(placeholders) == 1
+    assert "hp value" in protected
+
+
+def test_capitalized_proper_nouns_case_sensitivity():
+    """Verify capitalized names don't match lowercase common words."""
+    glossary = {"Will": "Vasiyet", "Rose": "Gül"}
+    text = "Will told me he will leave. Rose saw the water rose."
+    protected, placeholders = GlossaryManager.protect_terms(text, glossary, xml_mode=False)
+    
+    # Only capitalized Will and Rose should be protected (2 placeholders)
+    assert len(placeholders) == 2
+    assert "he will leave" in protected
+    assert "water rose" in protected
+
+
+def test_turkish_stopwords_collision_prevention():
+    """Verify apply_glossary doesn't corrupt Turkish words like 'her' and 'an'."""
+    glossary = {"Her": "Her", "An": "An"}
+    turkish_text = "Her gün yeni bir an yaşanıyor."
+    result = GlossaryManager.apply_glossary(turkish_text, glossary)
+    # Must remain completely untouched
+    assert result == "Her gün yeni bir an yaşanıyor."
+
+
+def test_glossary_extractor_stopwords_filter(tmp_path):
+    """Verify GlossaryExtractor filters out stopwords and short codes."""
+    from src.tools.glossary_extractor.extractor import GlossaryExtractor
+    game_dir = tmp_path / "game"
+    game_dir.mkdir()
+    rpy_file = game_dir / "script.rpy"
+    rpy_file.write_text(
+        'define to = Character("To")\n'
+        'define man = Character("Man")\n'
+        'define nurse = Character("Nurse")\n'
+        'define alice = Character("Alice")\n',
+        encoding="utf-8"
+    )
+    extractor = GlossaryExtractor()
+    extracted = extractor.extract_from_directory(str(tmp_path))
+    assert "Alice" in extracted
+    assert "To" not in extracted
+    assert "Man" not in extracted
+    assert "Nurse" not in extracted
+
+

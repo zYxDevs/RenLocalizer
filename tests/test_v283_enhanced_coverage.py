@@ -90,14 +90,10 @@ class TestCacheClearPersistence:
     def test_save_to_nonexistent_directory_creates_parent(self, tmp_path: Path):
         from src.core.translator import TranslationManager
         cache_file = tmp_path / "subdir" / "deep" / "cache.json"
+        assert not cache_file.parent.exists()
         manager = TranslationManager()
-        # Should either create dirs or handle gracefully
-        try:
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            manager.save_cache(str(cache_file))
-            assert cache_file.exists()
-        except Exception:
-            pass  # If it doesn't create dirs, that's also acceptable behavior
+        manager.save_cache(str(cache_file))
+        assert cache_file.exists()
 
 
 # ============================================================================
@@ -161,43 +157,57 @@ class TestTranslationIdEnhanced:
             assert tid  # Should produce a valid ID
 
     def test_same_text_same_id(self, tmp_path: Path):
-        """Same old text should always produce the same translation ID."""
+        """Same file, line and text should always produce the same deterministic translation ID."""
         from src.core.tl_parser import TLParser
         parser = TLParser()
 
-        for i in range(2):
-            tl_file = tmp_path / f"strings_{i}.rpy"
-            tl_file.write_text(
-                'translate turkish strings:\n    old "Consistent"\n    new ""\n',
-                encoding="utf-8"
-            )
-            parsed = parser.parse_file(str(tl_file))
+        tl_file = tmp_path / "strings.rpy"
+        tl_file.write_text(
+            'translate turkish strings:\n    old "Consistent"\n    new ""\n',
+            encoding="utf-8"
+        )
+        parsed1 = parser.parse_file(str(tl_file))
+        parsed2 = parser.parse_file(str(tl_file))
+        assert parsed1 is not None and len(parsed1.entries) > 0
+        assert parsed2 is not None and len(parsed2.entries) > 0
 
-        # Both should produce the same ID (deterministic)
-        # This is a design property, not a bug test
+        id1 = parsed1.entries[0].compute_id()
+        id2 = parsed2.entries[0].compute_id()
+        assert id1 == id2
+
+        # Different file paths must produce different IDs to avoid cross-file collisions
+        other_file = tmp_path / "other_strings.rpy"
+        other_file.write_text(
+            'translate turkish strings:\n    old "Consistent"\n    new ""\n',
+            encoding="utf-8"
+        )
+        parsed_other = parser.parse_file(str(other_file))
+        assert parsed_other is not None and len(parsed_other.entries) > 0
+        assert parsed_other.entries[0].compute_id() != id1
 
     def test_special_chars_in_text(self, tmp_path: Path):
         """Quotes, backslashes, and Ren'Py tags should not break ID computation."""
         from src.core.tl_parser import TLParser
         texts = [
-            'Hello \\"World\\"',
+            'Hello "World"',
             "It's a test",
             "{b}Bold{/b} text",
             "Line1\\nLine2",
         ]
         parser = TLParser()
-        for text in texts:
-            tl_file = tmp_path / "test.rpy"
-            escaped = text.replace('"', '\\"')
+        for idx, text in enumerate(texts):
+            tl_file = tmp_path / f"test_{idx}.rpy"
+            escaped = text.replace('\\', '\\\\').replace('"', '\\"')
             tl_file.write_text(
                 f'translate turkish strings:\n    old "{escaped}"\n    new ""\n',
                 encoding="utf-8"
             )
-            try:
-                parsed = parser.parse_file(str(tl_file))
-                # Should not crash
-            except Exception:
-                pass  # Some edge cases might not parse, that's OK
+            parsed = parser.parse_file(str(tl_file))
+            assert parsed is not None, f"Failed to parse file for text: {text}"
+            assert len(parsed.entries) >= 1, f"No entries extracted for text: {text}"
+            entry = parsed.entries[0]
+            tid = entry.compute_id()
+            assert tid is not None and len(tid) > 0
 
 
 # ============================================================================

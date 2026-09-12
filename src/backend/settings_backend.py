@@ -97,6 +97,8 @@ class SettingsBackend:
             "ai_request_delay": [],
             "ai_custom_system_prompt": [],
             "ai_model_profile": [],
+            "ai_batch_format": [],
+            "ai_scene_batch_size": [],
             # Output mode
             "output_mode": [],
             # UI / theme / language
@@ -307,6 +309,34 @@ class SettingsBackend:
             profile = "auto"
         self.config.translation_settings.ai_model_profile = profile
         self._emit("ai_model_profile")
+
+    _VALID_AI_BATCH_FORMATS = ("scene", "json", "xml")
+
+    def get_ai_batch_format(self) -> str:
+        fmt = getattr(
+            self.config.translation_settings, "ai_batch_format", "scene"
+        )
+        return fmt if fmt in self._VALID_AI_BATCH_FORMATS else "scene"
+
+    def set_ai_batch_format(self, val: str) -> None:
+        fmt = str(val or "scene").strip().lower()
+        if fmt not in self._VALID_AI_BATCH_FORMATS:
+            fmt = "scene"
+        self.config.translation_settings.ai_batch_format = fmt
+        self._emit("ai_batch_format")
+
+    def get_ai_scene_batch_size(self) -> int:
+        return getattr(
+            self.config.translation_settings, "ai_scene_batch_size", 15
+        )
+
+    def set_ai_scene_batch_size(self, val: int) -> None:
+        try:
+            size = max(5, min(int(val), 50))
+        except (ValueError, TypeError):
+            size = 15
+        self.config.translation_settings.ai_scene_batch_size = size
+        self._emit("ai_scene_batch_size")
 
     def is_hy_mt2_model_detected(self) -> bool:
         """True when the configured local LLM model name is a Hy-MT family model."""

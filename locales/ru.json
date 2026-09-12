@@ -1294,5 +1294,13 @@
   "cache_cleared_toast": "Translation cache cleared.",
   "engine_local_llm": "🖥️ Local LLM (Ollama / LM Studio)",
   "source_lang_auto": "🤖 Auto-detect",
-  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags..."
+  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags...",
+  "ai_mode_label": "Режим перевода",
+  "ai_mode_scene": "Режим сцены / сценария (с учетом контекста)",
+  "ai_mode_json": "Стандартный структурированный режим (JSON)",
+  "ai_mode_xml": "Классический режим группировки (XML)",
+  "ai_scene_size_label": "Размер блока сцены (строк)",
+  "ai_mode_scene_desc": "💡 Передает диалоги в виде сценария. Лучше всего сохраняет контекст, обращение персонажей и тон (Рекомендуется для визуальных новелл).",
+  "ai_mode_json_desc": "💡 Передает тексты в виде пар ключ-значение. Обеспечивает строгую структуру данных без сдвига строк; идеально для меню и интерфейса.",
+  "ai_mode_xml_desc": "💡 Оборачивает текст в XML-теги. Самый надежный вариант для небольших или старых моделей, плохо поддерживающих JSON."
 }

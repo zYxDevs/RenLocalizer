@@ -1,12 +1,13 @@
-// Main.qml — RenLocalizer v2.8.11 (Pro Card-based Dashboard UI Overhaul)
+// Main.qml — RenLocalizer v2.8.15 (Pro Fluent Micro-Interactions & Modern Motion UI)
 // Yeniden tasarlandı: Sol Kenar Çubuğu (Sidebar Navigation), Glass/Carbon Kartlar,
-// Mikro-animasyonlar, Tam Sayfa Ayarlar ve Konsol Sekmeleri, Evrensel ComboBox Bugfix.
+// Mikro-animasyonlar (Micro-interactions), Akıcı Geçişler, Tam Sayfa Ayarlar ve Konsol Sekmeleri.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import QtQuick.Window
+import "components"
 
 ApplicationWindow {
     id: root
@@ -39,9 +40,9 @@ ApplicationWindow {
     readonly property color clrAccent2:    "#4FACFE" // Mavi gradyan bitiş
     readonly property color clrPurple:     "#A855F7" // Vurgu moru
     readonly property color clrSuccess:    "#10B981" // Yeşil çentik
-    readonly property color clrSuccessDim: Qt.rgba(16, 185, 129, 0.15)
+    readonly property color clrSuccessDim: "#2610B981" // %15 zümrüt yeşil
     readonly property color clrWarn:       "#F59E0B" // Amber uyarı
-    readonly property color clrWarnDim:    Qt.rgba(245, 158, 11, 0.15)
+    readonly property color clrWarnDim:    "#26F59E0B" // %15 amber sarı
     readonly property color clrError:      "#EF4444" // Kırmızı hata
     readonly property color clrTxt:        "#F3F4F6" // Ana beyaz metin
     readonly property color clrTxt2:       "#9CA3AF" // İkinci gri metin
@@ -63,6 +64,7 @@ ApplicationWindow {
     property int    navIndex:        0 // 0: Dashboard, 1: Settings, 2: Logs, 3: Toolbox
     property bool   isTranslating:   false
     property string currentStage:    "idle"
+    property string stageCustomName: ""
     property int    totalLines:      0
     property int    translatedLines: 0
     property real   successRate:     0.0
@@ -105,6 +107,8 @@ ApplicationWindow {
 
         function onLogMessage(level, message) {
             appendLog(level, message)
+            if (message.indexOf("❌") >= 0 && (message.indexOf("select a game") >= 0 || message.indexOf("not found") >= 0 || message.indexOf("game folder") >= 0 || message.indexOf("oyun") >= 0))
+                projectPathField.triggerShake()
             // Show toast for toolbox operations and key events
             if (message.indexOf("✅") === 0 && (message.indexOf("Font") >= 0 || message.indexOf("Lint") >= 0 || message.indexOf("terms") >= 0 || message.indexOf("imported") >= 0 || message.indexOf("exported") >= 0 || message.indexOf("filled") >= 0 || message.indexOf("translated") >= 0))
                 showToast(message.replace("✅ ", ""), "success")
@@ -121,7 +125,7 @@ ApplicationWindow {
 
         function onStageChanged(stage, displayName) {
             currentStage = stage
-            stageLabel.text = displayName
+            stageCustomName = cleanStageText(displayName)
             var stageProgress = {
                 "idle": 0, "validating": 5, "unren": 15,
                 "generating": 30, "parsing": 40,
@@ -133,20 +137,21 @@ ApplicationWindow {
 
         function onTranslationStarted() {
             isTranslating = true
+            statsVisible = false
             progressBar.value = 0
             progressLabel.text = ""
-            stageLabel.text = appBackend.getTextWithDefault("starting_translation", "Başlatılıyor...")
+            currentStage = "starting"
             navIndex = 0 // Akışı anlık izlemek için Dashboard sekmene geç
         }
 
         function onTranslationFinished(success, message) {
             isTranslating = false
             if (success) {
-                stageLabel.text = appBackend.getTextWithDefault("stage_completed", "Tamamlandı") + " ✓"
+                currentStage = "completed"
                 progressBar.value = 1.0
                 showToast(appBackend.getTextWithDefault("translation_completed", "Çeviri tamamlandı!"), "success")
             } else {
-                stageLabel.text = appBackend.getTextWithDefault("stage_error", "Hata")
+                currentStage = "error"
                 showToast(appBackend.getTextWithDefault("pipeline_translate_failed", "Translation failed") + ": " + message, "error")
             }
         }
@@ -200,10 +205,7 @@ ApplicationWindow {
     }
 
     function showToast(msg, type) {
-        toast.message = msg
-        toast.toastType = type
-        toast.opacity = 1.0
-        toastTimer.restart()
+        toast.show(msg, type)
     }
 
     function logColor(level) {
@@ -220,6 +222,41 @@ ApplicationWindow {
         if (level === "warning") return "[" + appBackend.getTextWithDefault("log_tag_warn", "UYARI").replace("[","").replace("]","") + "] "
         if (level === "success") return "[" + appBackend.getTextWithDefault("log_tag_ok", "TAMAM").replace("[","").replace("]","") + "] "
         return "[" + appBackend.getTextWithDefault("log_tag_info", "BİLGİ").replace("[","").replace("]","") + "] "
+    }
+
+    function cleanModalTitle(str) {
+        if (!str) return ""
+        return str.replace(/^[\uD800-\uDBFF][\uDC00-\uDFFF]\s*/, "").replace(/^[🎉🚀✅⚠️📖➕]\s*/, "").trim()
+    }
+
+    function cleanStageText(str) {
+        if (!str) return ""
+        return str.replace(/[\.\s…]+$/, "").trim()
+    }
+
+    function getStageDisplayText(stage) {
+        var trigger = appBackend.uiTrigger
+        if (stage === "idle")
+            return appBackend.getTextWithDefault("status_ready", "Ready - Waiting to Start")
+        if (stage === "starting")
+            return cleanStageText(appBackend.getTextWithDefault("starting_translation", "Starting translation..."))
+        if (stage === "validating")
+            return cleanStageText(appBackend.getTextWithDefault("stage_validating", "Validating..."))
+        if (stage === "unren" || stage === "unrpa")
+            return cleanStageText(appBackend.getTextWithDefault("stage_unren", "Decompiling (UnRen)..."))
+        if (stage === "generating")
+            return cleanStageText(appBackend.getTextWithDefault("stage_generating", "Generating Translation Files..."))
+        if (stage === "parsing")
+            return cleanStageText(appBackend.getTextWithDefault("stage_parsing", "Reading Files..."))
+        if (stage === "translating")
+            return cleanStageText(appBackend.getTextWithDefault("stage_translating", "Translating..."))
+        if (stage === "saving")
+            return cleanStageText(appBackend.getTextWithDefault("stage_saving", "Saving..."))
+        if (stage === "completed")
+            return cleanModalTitle(appBackend.getTextWithDefault("stage_completed", "Completed!")).replace("!", "") + " ✓"
+        if (stage === "error")
+            return cleanModalTitle(appBackend.getTextWithDefault("stage_error", "Error!"))
+        return cleanStageText(stageCustomName.length > 0 ? stageCustomName : stage)
     }
 
     // ── Dosya ve Klasör Seçim Diyalogları ─────────────────────────────────
@@ -315,110 +352,229 @@ ApplicationWindow {
 
                     // Buton 1: Dashboard
                     Button {
+                        id: btnNavDash
                         Layout.fillWidth: true; height: 44
+                        scale: down ? 0.97 : 1.0
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: navIndex = 0
                         background: Rectangle {
                             radius: 10
-                            color: navIndex === 0 ? Qt.rgba(0, 242, 254, 0.14) : (parent.hovered ? clrCardHover : "transparent")
-                            border.color: navIndex === 0 ? clrAccent : "transparent"
+                            color: navIndex === 0 ? Qt.rgba(0, 242, 254, 0.14) : (btnNavDash.hovered ? clrCardHover : "transparent")
+                            border.color: navIndex === 0 ? Qt.rgba(0, 242, 254, 0.7) : "transparent"
                             border.width: 1
                             Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            // Sol aktif neon gösterge çizgisi
+                            Rectangle {
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 4
+                                width: 3; height: navIndex === 0 ? 22 : 0
+                                radius: 1.5; color: clrAccent
+                                opacity: navIndex === 0 ? 1.0 : 0.0
+                                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
+                            }
                         }
                         contentItem: RowLayout {
                             spacing: 14
-                            Label { text: "🏠"; font.pixelSize: 17 }
+                            transform: Translate {
+                                x: (btnNavDash.hovered && navIndex !== 0) ? 4 : 0
+                                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
+                            Label {
+                                text: "🏠"; font.pixelSize: 17
+                                scale: navIndex === 0 ? 1.15 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
                             Label {
                                 text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_dashboard", "Dashboard")
                                 font.pixelSize: 13; font.bold: navIndex === 0; color: navIndex === 0 ? clrAccent : clrTxt
+                                Behavior on color { ColorAnimation { duration: 150 } }
                             }
                         }
                     }
 
                     // Buton 2: Settings (Gelişmiş Ayarlar)
                     Button {
+                        id: btnNavSettings
                         Layout.fillWidth: true; height: 44
+                        scale: down ? 0.97 : 1.0
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: navIndex = 1
                         background: Rectangle {
                             radius: 10
-                            color: navIndex === 1 ? Qt.rgba(0, 242, 254, 0.14) : (parent.hovered ? clrCardHover : "transparent")
-                            border.color: navIndex === 1 ? clrAccent : "transparent"
+                            color: navIndex === 1 ? Qt.rgba(0, 242, 254, 0.14) : (btnNavSettings.hovered ? clrCardHover : "transparent")
+                            border.color: navIndex === 1 ? Qt.rgba(0, 242, 254, 0.7) : "transparent"
                             border.width: 1
                             Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            // Sol aktif neon gösterge çizgisi
+                            Rectangle {
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 4
+                                width: 3; height: navIndex === 1 ? 22 : 0
+                                radius: 1.5; color: clrAccent
+                                opacity: navIndex === 1 ? 1.0 : 0.0
+                                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
+                            }
                         }
                         contentItem: RowLayout {
                             spacing: 14
-                            Label { text: "⚙️"; font.pixelSize: 17 }
+                            transform: Translate {
+                                x: (btnNavSettings.hovered && navIndex !== 1) ? 4 : 0
+                                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
+                            Label {
+                                text: "⚙️"; font.pixelSize: 17
+                                scale: navIndex === 1 ? 1.15 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
                             Label {
                                 text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_settings", "Settings & AI")
                                 font.pixelSize: 13; font.bold: navIndex === 1; color: navIndex === 1 ? clrAccent : clrTxt
+                                Behavior on color { ColorAnimation { duration: 150 } }
                             }
                         }
                     }
 
                     // Buton 3: Log Console (Detaylı Loglar)
                     Button {
+                        id: btnNavLogs
                         Layout.fillWidth: true; height: 44
+                        scale: down ? 0.97 : 1.0
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: navIndex = 2
                         background: Rectangle {
                             radius: 10
-                            color: navIndex === 2 ? Qt.rgba(0, 242, 254, 0.14) : (parent.hovered ? clrCardHover : "transparent")
-                            border.color: navIndex === 2 ? clrAccent : "transparent"
+                            color: navIndex === 2 ? Qt.rgba(0, 242, 254, 0.14) : (btnNavLogs.hovered ? clrCardHover : "transparent")
+                            border.color: navIndex === 2 ? Qt.rgba(0, 242, 254, 0.7) : "transparent"
                             border.width: 1
                             Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            // Sol aktif neon gösterge çizgisi
+                            Rectangle {
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 4
+                                width: 3; height: navIndex === 2 ? 22 : 0
+                                radius: 1.5; color: clrAccent
+                                opacity: navIndex === 2 ? 1.0 : 0.0
+                                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
+                            }
                         }
                         contentItem: RowLayout {
                             spacing: 14
-                            Label { text: "📜"; font.pixelSize: 17 }
+                            transform: Translate {
+                                x: (btnNavLogs.hovered && navIndex !== 2) ? 4 : 0
+                                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
+                            Label {
+                                text: "📜"; font.pixelSize: 17
+                                scale: navIndex === 2 ? 1.15 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
                             Label {
                                 text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_logs", "Log Console")
                                 font.pixelSize: 13; font.bold: navIndex === 2; color: navIndex === 2 ? clrAccent : clrTxt
+                                Behavior on color { ColorAnimation { duration: 150 } }
                             }
                         }
                     }
+
                     // Glossary Button
                     Button {
+                        id: btnNavGlossary
                         Layout.fillWidth: true; height: 44
+                        scale: down ? 0.97 : 1.0
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: navIndex = 4
                         background: Rectangle {
                             radius: 10
-                            color: navIndex === 4 ? Qt.rgba(0, 242, 254, 0.14) : (parent.hovered ? clrCardHover : "transparent")
-                            border.color: navIndex === 4 ? clrAccent : "transparent"
+                            color: navIndex === 4 ? Qt.rgba(0, 242, 254, 0.14) : (btnNavGlossary.hovered ? clrCardHover : "transparent")
+                            border.color: navIndex === 4 ? Qt.rgba(0, 242, 254, 0.7) : "transparent"
                             border.width: 1
                             Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            // Sol aktif neon gösterge çizgisi
+                            Rectangle {
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 4
+                                width: 3; height: navIndex === 4 ? 22 : 0
+                                radius: 1.5; color: clrAccent
+                                opacity: navIndex === 4 ? 1.0 : 0.0
+                                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
+                            }
                         }
                         contentItem: RowLayout {
                             spacing: 14
-                            Label { text: "📚"; font.pixelSize: 17 }
+                            transform: Translate {
+                                x: (btnNavGlossary.hovered && navIndex !== 4) ? 4 : 0
+                                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
+                            Label {
+                                text: "📚"; font.pixelSize: 17
+                                scale: navIndex === 4 ? 1.15 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
                             Label {
                                 text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_glossary", "📚 Glossary")
                                 font.pixelSize: 13; font.bold: navIndex === 4; color: navIndex === 4 ? clrAccent : clrTxt
+                                Behavior on color { ColorAnimation { duration: 150 } }
                             }
                         }
                     }
 
                     // Buton 5: Toolbox (Araç Kutusu)
                     Button {
+                        id: btnNavToolbox
                         Layout.fillWidth: true; height: 44
+                        scale: down ? 0.97 : 1.0
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: navIndex = 3
                         background: Rectangle {
                             radius: 10
-                            color: navIndex === 3 ? Qt.rgba(0, 242, 254, 0.14) : (parent.hovered ? clrCardHover : "transparent")
-                            border.color: navIndex === 3 ? clrAccent : "transparent"
+                            color: navIndex === 3 ? Qt.rgba(0, 242, 254, 0.14) : (btnNavToolbox.hovered ? clrCardHover : "transparent")
+                            border.color: navIndex === 3 ? Qt.rgba(0, 242, 254, 0.7) : "transparent"
                             border.width: 1
                             Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            // Sol aktif neon gösterge çizgisi
+                            Rectangle {
+                                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 4
+                                width: 3; height: navIndex === 3 ? 22 : 0
+                                radius: 1.5; color: clrAccent
+                                opacity: navIndex === 3 ? 1.0 : 0.0
+                                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
+                            }
                         }
                         contentItem: RowLayout {
                             spacing: 14
-                            Label { text: "🛠️"; font.pixelSize: 17 }
+                            transform: Translate {
+                                x: (btnNavToolbox.hovered && navIndex !== 3) ? 4 : 0
+                                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
+                            Label {
+                                text: "🛠️"; font.pixelSize: 17
+                                scale: navIndex === 3 ? 1.15 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                            }
                             Label {
                                 text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_toolbox", "🛠️ Araç Kutusu")
                                 font.pixelSize: 13; font.bold: navIndex === 3; color: navIndex === 3 ? clrAccent : clrTxt
+                                Behavior on color { ColorAnimation { duration: 150 } }
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-
 
                 // Esnek İtici Alan (En az 24px garanti tampon)
                 Item {
@@ -434,23 +590,53 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 10
                     Button {
+                        id: btnWikiGuide
                         Layout.fillWidth: true; height: 38
+                        scale: down ? 0.96 : (hovered ? 1.02 : 1.0)
+                        transformOrigin: Item.Center
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: Qt.openUrlExternally("https://github.com/Lord0fTurk/RenLocalizer/wiki")
-                        background: Rectangle { radius: 8; color: parent.hovered ? clrCardHover : "transparent"; border.color: clrCardBorder; border.width: 1 }
+                        background: Rectangle {
+                            radius: 8
+                            color: btnWikiGuide.down ? Qt.rgba(0, 242, 254, 0.1) : (btnWikiGuide.hovered ? clrCardHover : "transparent")
+                            border.color: btnWikiGuide.hovered ? Qt.rgba(0, 242, 254, 0.5) : clrCardBorder
+                            border.width: 1
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+                        }
                         contentItem: RowLayout {
                             anchors.centerIn: parent; spacing: 8
                             Label { text: "📖"; font.pixelSize: 14 }
-                            Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_wiki_guide", "Wiki Guide"); color: clrTxt2; font.pixelSize: 12; elide: Text.ElideRight }
+                            Label {
+                                text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_wiki_guide", "Wiki Guide")
+                                color: btnWikiGuide.hovered ? clrTxt : clrTxt2; font.pixelSize: 12; elide: Text.ElideRight
+                                Behavior on color { ColorAnimation { duration: 150 } }
+                            }
                         }
                     }
                     Button {
+                        id: btnPatreonSupport
                         Layout.fillWidth: true; height: 38
+                        scale: down ? 0.96 : (hovered ? 1.02 : 1.0)
+                        transformOrigin: Item.Center
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                         onClicked: Qt.openUrlExternally("https://www.patreon.com/RenLocalizer")
-                        background: Rectangle { radius: 8; color: parent.hovered ? Qt.rgba(239, 68, 68, 0.15) : "transparent"; border.color: "#991B1B"; border.width: 1 }
+                        background: Rectangle {
+                            radius: 8
+                            color: btnPatreonSupport.down ? Qt.rgba(239, 68, 68, 0.25) : (btnPatreonSupport.hovered ? Qt.rgba(239, 68, 68, 0.15) : "transparent")
+                            border.color: btnPatreonSupport.hovered ? "#EF4444" : "#991B1B"
+                            border.width: 1
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+                        }
                         contentItem: RowLayout {
                             anchors.centerIn: parent; spacing: 8
                             Label { text: "❤️"; font.pixelSize: 14 }
-                            Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_patreon_support", "Patreon Support"); color: "#FCA5A5"; font.pixelSize: 12; elide: Text.ElideRight }
+                            Label {
+                                text: appBackend.uiTrigger, appBackend.getTextWithDefault("nav_patreon_support", "Patreon Support")
+                                color: btnPatreonSupport.hovered ? "#FFFFFF" : "#FCA5A5"; font.pixelSize: 12; elide: Text.ElideRight
+                                Behavior on color { ColorAnimation { duration: 150 } }
+                            }
                         }
                     }
                 }
@@ -461,7 +647,29 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    Rectangle { width: 9; height: 9; radius: 4.5; color: isTranslating ? clrWarn : clrSuccess }
+                    Rectangle {
+                        width: 9; height: 9; radius: 4.5
+                        color: isTranslating ? clrWarn : clrSuccess
+
+                        // Aktif durumdayken radar/nabız halkası (pulse effect)
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: parent.width; height: parent.height; radius: width / 2
+                            color: parent.color
+                            opacity: 0.0
+
+                            SequentialAnimation on scale {
+                                running: isTranslating
+                                loops: Animation.Infinite
+                                NumberAnimation { from: 1.0; to: 2.5; duration: 1200; easing.type: Easing.OutQuad }
+                            }
+                            SequentialAnimation on opacity {
+                                running: isTranslating
+                                loops: Animation.Infinite
+                                NumberAnimation { from: 0.75; to: 0.0; duration: 1200; easing.type: Easing.OutQuad }
+                            }
+                        }
+                    }
                     Label {
                         text: appBackend.uiTrigger, isTranslating ? appBackend.getTextWithDefault("status_working", "Working...") : appBackend.getTextWithDefault("status_ready", "System Ready")
                         color: clrTxt2; font.pixelSize: 12; font.bold: true
@@ -496,8 +704,22 @@ ApplicationWindow {
 
                     // Üst Başlık
                     RowLayout {
+                        id: dashHeaderRow
                         Layout.fillWidth: true
                         Layout.leftMargin: 24; Layout.rightMargin: 24
+
+                        transform: Translate { id: animTrDashHeader; y: 12 }
+                        opacity: 0.0
+                        SequentialAnimation {
+                            id: animEntranceDashHeader
+                            ParallelAnimation {
+                                NumberAnimation { target: animTrDashHeader; property: "y"; to: 0; duration: 220; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: dashHeaderRow; property: "opacity"; to: 1.0; duration: 200; easing.type: Easing.OutQuad }
+                            }
+                        }
+                        Component.onCompleted: if (navIndex === 0) animEntranceDashHeader.start()
+                        Connections { target: root; function onNavIndexChanged() { if (navIndex === 0) animEntranceDashHeader.restart() } }
+
                         ColumnLayout {
                             spacing: 4
                             Label {
@@ -521,9 +743,26 @@ ApplicationWindow {
                         border.color: cardProject.hovered ? Qt.rgba(0, 242, 254, 0.4) : clrCardBorder
                         border.width: 1
                         property bool hovered: false
+                        scale: hovered ? 1.006 : 1.0
+                        transformOrigin: Item.Center
+                        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                         Behavior on color { ColorAnimation { duration: 180 } }
                         Behavior on border.color { ColorAnimation { duration: 180 } }
                         HoverHandler { onHoveredChanged: cardProject.hovered = hovered }
+
+                        // QW-1 Staggered Entrance
+                        transform: Translate { id: animTrProject; y: 16 }
+                        opacity: 0.0
+                        SequentialAnimation {
+                            id: animEntranceProject
+                            PauseAnimation { duration: 0 }
+                            ParallelAnimation {
+                                NumberAnimation { target: animTrProject; property: "y"; to: 0; duration: 240; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: cardProject; property: "opacity"; to: 1.0; duration: 220; easing.type: Easing.OutQuad }
+                            }
+                        }
+                        Component.onCompleted: if (navIndex === 0) animEntranceProject.start()
+                        Connections { target: root; function onNavIndexChanged() { if (navIndex === 0) animEntranceProject.restart() } }
 
                         RowLayout {
                             anchors.fill: parent; anchors.margins: 22
@@ -543,8 +782,51 @@ ApplicationWindow {
                                         Layout.fillWidth: true; height: 40
                                         font.pixelSize: 12; color: clrTxt
                                         selectByMouse: true
+                                        property bool hasError: false
+                                        onTextChanged: if (hasError) hasError = false
                                         onEditingFinished: if (text.length > 0) appBackend.setProjectPath(text)
-                                        background: Rectangle { radius: 8; color: clrInput; border.color: projectPathField.activeFocus ? clrAccent : clrCardBorder; border.width: 1 }
+
+                                        transform: Translate { id: pathFieldShake; x: 0 }
+
+                                        SequentialAnimation {
+                                            id: shakeFieldAnim
+                                            alwaysRunToEnd: true
+                                            onStarted: projectPathField.hasError = true
+                                            NumberAnimation { target: pathFieldShake; property: "x"; to: -8; duration: 40; easing.type: Easing.OutQuad }
+                                            NumberAnimation { target: pathFieldShake; property: "x"; to: 8;  duration: 60; easing.type: Easing.InOutQuad }
+                                            NumberAnimation { target: pathFieldShake; property: "x"; to: -6; duration: 50; easing.type: Easing.InOutQuad }
+                                            NumberAnimation { target: pathFieldShake; property: "x"; to: 5;  duration: 45; easing.type: Easing.InOutQuad }
+                                            NumberAnimation { target: pathFieldShake; property: "x"; to: 0;  duration: 40; easing.type: Easing.OutQuad }
+                                            PauseAnimation { duration: 1200 }
+                                            PropertyAction { target: projectPathField; property: "hasError"; value: false }
+                                        }
+
+                                        function triggerShake() {
+                                            shakeFieldAnim.restart()
+                                        }
+
+                                        background: Rectangle {
+                                            radius: 8
+                                            color: clrInput
+                                            border.color: projectPathField.hasError ? clrError : (projectPathField.activeFocus ? clrAccent : clrCardBorder)
+                                            border.width: projectPathField.hasError ? 1.5 : 1
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                            // QW-3 Focus Ring Glow & Error Halo (macOS/Fluent tarzı ışıma)
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                anchors.margins: -3
+                                                radius: parent.radius + 2
+                                                color: "transparent"
+                                                border.color: projectPathField.hasError ? clrError : clrAccent
+                                                border.width: 2
+                                                opacity: projectPathField.hasError ? 0.65 : (projectPathField.activeFocus ? 0.35 : 0.0)
+                                                scale: (projectPathField.hasError || projectPathField.activeFocus) ? 1.0 : 0.98
+                                                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                                Behavior on border.color { ColorAnimation { duration: 180 } }
+                                            }
+                                        }
                                         Label {
                                             anchors.left: parent.left; anchors.leftMargin: 12
                                             anchors.verticalCenter: parent.verticalCenter
@@ -557,26 +839,47 @@ ApplicationWindow {
                                         height: 42
                                         Layout.preferredWidth: Math.max(115, implicitContentWidth + 32)
                                         text: appBackend.uiTrigger, "📁 " + appBackend.getTextWithDefault("browse_folder", "Klasör")
+                                        scale: down ? 0.96 : (hovered ? 1.03 : 1.0)
+                                        transformOrigin: Item.Center
+                                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                                         onClicked: folderDialog.open()
                                         background: Rectangle {
-                                            radius: 10; color: parent.hovered ? clrCardHover : clrInput
-                                            border.color: parent.hovered ? Qt.rgba(0, 242, 254, 0.5) : clrCardBorder; border.width: 1
+                                            radius: 10
+                                            color: parent.down ? Qt.rgba(0, 242, 254, 0.1) : (parent.hovered ? clrCardHover : clrInput)
+                                            border.color: parent.hovered ? Qt.rgba(0, 242, 254, 0.6) : clrCardBorder
+                                            border.width: parent.hovered ? 1.5 : 1
                                             Behavior on color { ColorAnimation { duration: 150 } }
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
                                         }
-                                        contentItem: Label { text: parent.text; color: clrTxt; font.pixelSize: 13; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                        contentItem: Label {
+                                            text: parent.text; color: parent.hovered ? clrAccent : clrTxt
+                                            font.pixelSize: 13; font.bold: true
+                                            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                            Behavior on color { ColorAnimation { duration: 140 } }
+                                        }
                                     }
                                     Button {
                                         id: btnBrowseExe
                                         height: 42
                                         Layout.preferredWidth: Math.max(135, implicitContentWidth + 32)
                                         text: appBackend.uiTrigger, "🎮 " + appBackend.getTextWithDefault("browse_exe", "EXE Dosyası")
+                                        scale: down ? 0.96 : (hovered ? 1.03 : 1.0)
+                                        transformOrigin: Item.Center
+                                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                                         onClicked: fileDialog.open()
                                         background: Rectangle {
-                                            radius: 10; color: parent.hovered ? clrCardHover : clrInput
-                                            border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1
+                                            radius: 10
+                                            color: parent.down ? Qt.rgba(0, 242, 254, 0.25) : (parent.hovered ? Qt.rgba(0, 242, 254, 0.15) : clrInput)
+                                            border.color: parent.hovered ? clrAccent : Qt.rgba(0, 242, 254, 0.4)
+                                            border.width: parent.hovered ? 1.5 : 1
                                             Behavior on color { ColorAnimation { duration: 150 } }
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
                                         }
-                                        contentItem: Label { text: parent.text; color: clrAccent; font.pixelSize: 13; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                        contentItem: Label {
+                                            text: parent.text; color: clrAccent
+                                            font.pixelSize: 13; font.bold: true
+                                            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                        }
                                     }
                                 }
                             }
@@ -584,7 +887,10 @@ ApplicationWindow {
                             // Dekoratif İkon / Oyun Kolu Rozeti
                             Rectangle {
                                 width: 72; height: 72; radius: 14; color: Qt.rgba(0, 242, 254, 0.08)
-                                border.color: Qt.rgba(0, 242, 254, 0.25); border.width: 1
+                                border.color: cardProject.hovered ? clrAccent : Qt.rgba(0, 242, 254, 0.25); border.width: 1
+                                scale: cardProject.hovered ? 1.06 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                                Behavior on border.color { ColorAnimation { duration: 180 } }
                                 Label { anchors.centerIn: parent; text: "🎮"; font.pixelSize: 32 }
                             }
                         }
@@ -600,9 +906,26 @@ ApplicationWindow {
                         border.color: cardEngine.hovered ? Qt.rgba(0, 242, 254, 0.4) : clrCardBorder
                         border.width: 1
                         property bool hovered: false
+                        scale: hovered ? 1.006 : 1.0
+                        transformOrigin: Item.Center
+                        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                         Behavior on color { ColorAnimation { duration: 180 } }
                         Behavior on border.color { ColorAnimation { duration: 180 } }
                         HoverHandler { onHoveredChanged: cardEngine.hovered = hovered }
+
+                        // QW-1 Staggered Entrance
+                        transform: Translate { id: animTrEngine; y: 16 }
+                        opacity: 0.0
+                        SequentialAnimation {
+                            id: animEntranceEngine
+                            PauseAnimation { duration: 45 }
+                            ParallelAnimation {
+                                NumberAnimation { target: animTrEngine; property: "y"; to: 0; duration: 240; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: cardEngine; property: "opacity"; to: 1.0; duration: 220; easing.type: Easing.OutQuad }
+                            }
+                        }
+                        Component.onCompleted: if (navIndex === 0) animEntranceEngine.start()
+                        Connections { target: root; function onNavIndexChanged() { if (navIndex === 0) animEntranceEngine.restart() } }
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 22
@@ -612,7 +935,23 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("card_engine_title", "Translation Engine & Languages"); font.pixelSize: 16; font.bold: true; color: clrTxt }
                                 Item { Layout.fillWidth: true }
-                                Label { text: appBackend.uiTrigger, "⚙️ " + appBackend.getTextWithDefault("advanced_settings_link", "Configure AI Parameters ->"); color: clrAccent; font.pixelSize: 12; font.underline: true; MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: navIndex = 1 } }
+                                Label {
+                                    id: aiParamLink
+                                    text: appBackend.uiTrigger, "⚙️ " + appBackend.getTextWithDefault("advanced_settings_link", "Configure AI Parameters ->")
+                                    color: aiLinkMa.containsMouse ? "#FFFFFF" : clrAccent
+                                    font.pixelSize: 12
+                                    font.underline: true
+                                    scale: aiLinkMa.pressed ? 0.96 : (aiLinkMa.containsMouse ? 1.04 : 1.0)
+                                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                                    Behavior on color { ColorAnimation { duration: 140 } }
+                                    MouseArea {
+                                        id: aiLinkMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: navIndex = 1
+                                    }
+                                }
                             }
 
                             RowLayout {
@@ -642,12 +981,15 @@ ApplicationWindow {
                                         textRole: "name"; valueRole: "id"
                                         Component.onCompleted: currentIndex = indexOfValue(appBackend.selectedEngine || "google")
                                         onActivated: { appBackend.setSelectedEngine(currentValue); appBackend.refreshUI() }
-                                        background: Rectangle { radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1 }
+                                        background: Rectangle {
+                                            radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
+                                        }
                                         contentItem: Label { leftPadding: 14; text: engineComboBox.displayText; color: clrTxt; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
                                         delegate: ItemDelegate {
                                             width: engineComboBox.width
                                             contentItem: Label { text: modelData.name; color: clrTxt; font.pixelSize: 12; leftPadding: 14 }
-                                            background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent" }
+                                            background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent"; Behavior on color { ColorAnimation { duration: 120 } } }
                                         }
                                         popup: Popup { y: engineComboBox.height; width: engineComboBox.width; implicitHeight: Math.min(contentItem.implicitHeight, 220); padding: 4; contentItem: ListView { clip: true; implicitHeight: contentHeight; model: engineComboBox.delegateModel; ScrollBar.vertical: ScrollBar {} } background: Rectangle { color: clrCard; radius: 8; border.color: clrCardBorder; border.width: 1 } }
                                     }
@@ -664,12 +1006,15 @@ ApplicationWindow {
                                         textRole: "name"; valueRole: "code"
                                         Component.onCompleted: currentIndex = indexOfValue("auto")
                                         onActivated: appBackend.setSourceLanguage(currentValue)
-                                        background: Rectangle { radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1 }
+                                        background: Rectangle {
+                                            radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
+                                        }
                                         contentItem: Label { leftPadding: 14; text: sourceLangCombo.displayText !== "" ? sourceLangCombo.displayText : "🤖 Auto-detect"; color: clrTxt; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
                                         delegate: ItemDelegate {
                                             width: sourceLangCombo.width
                                             contentItem: Label { text: getLangText(modelData, model); color: sourceLangCombo.highlightedIndex === index ? clrAccent : clrTxt; font.pixelSize: 12; leftPadding: 14 }
-                                            background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent" }
+                                            background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent"; Behavior on color { ColorAnimation { duration: 120 } } }
                                         }
                                         popup: Popup { y: sourceLangCombo.height; width: sourceLangCombo.width; implicitHeight: Math.min(contentItem.implicitHeight, 260); padding: 4; contentItem: ListView { clip: true; implicitHeight: contentHeight; model: sourceLangCombo.delegateModel; ScrollBar.vertical: ScrollBar {} } background: Rectangle { color: clrCard; radius: 8; border.color: clrCardBorder; border.width: 1 } }
                                     }
@@ -685,12 +1030,15 @@ ApplicationWindow {
                                         model: appBackend.getTargetLanguages()
                                         textRole: "name"; valueRole: "code"
                                         onActivated: appBackend.setTargetLanguage(currentValue)
-                                        background: Rectangle { radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1 }
+                                        background: Rectangle {
+                                            radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
+                                        }
                                         contentItem: Label { leftPadding: 14; text: targetLangCombo.displayText; color: clrTxt; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
                                         delegate: ItemDelegate {
                                             width: targetLangCombo.width
                                             contentItem: Label { text: getLangText(modelData, model); color: targetLangCombo.highlightedIndex === index ? clrAccent : clrTxt; font.pixelSize: 12; leftPadding: 14 }
-                                            background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent" }
+                                            background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent"; Behavior on color { ColorAnimation { duration: 120 } } }
                                         }
                                         popup: Popup { y: targetLangCombo.height; width: targetLangCombo.width; implicitHeight: Math.min(contentItem.implicitHeight, 260); padding: 4; contentItem: ListView { clip: true; implicitHeight: contentHeight; model: targetLangCombo.delegateModel; ScrollBar.vertical: ScrollBar {} } background: Rectangle { color: clrCard; radius: 8; border.color: clrCardBorder; border.width: 1 } }
                                     }
@@ -706,27 +1054,114 @@ ApplicationWindow {
                         Layout.leftMargin: 24; Layout.rightMargin: 24
                         Layout.preferredHeight: 56
                         enabled: !isTranslating || currentStage !== "idle"
+
+                        // QW-1 Staggered Entrance
+                        transform: Translate { id: animTrStart; y: 16 }
+                        opacity: 0.0
+                        SequentialAnimation {
+                            id: animEntranceStart
+                            PauseAnimation { duration: 90 }
+                            ParallelAnimation {
+                                NumberAnimation { target: animTrStart; property: "y"; to: 0; duration: 240; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: startButton; property: "opacity"; to: 1.0; duration: 220; easing.type: Easing.OutQuad }
+                            }
+                        }
+                        Component.onCompleted: if (navIndex === 0) animEntranceStart.start()
+                        Connections { target: root; function onNavIndexChanged() { if (navIndex === 0) animEntranceStart.restart() } }
+
+                        // Modern mikro-etkileşim: Hover'da 1.02x büyüme, tıklandığında 0.97x basılma hissi
+                        scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                        transformOrigin: Item.Center
+                        Behavior on scale {
+                            NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                        }
+
                         onClicked: {
-                            if (isTranslating) appBackend.stopTranslation()
-                            else appBackend.startTranslation()
+                            if (isTranslating) {
+                                appBackend.stopTranslation()
+                            } else {
+                                if (!projectPathField.text || projectPathField.text.trim().length === 0) {
+                                    projectPathField.triggerShake()
+                                    showToast(appBackend.getTextWithDefault("log_select_game", "Lütfen bir oyun klasörü veya EXE seçin."), "warning")
+                                    return
+                                }
+                                appBackend.startTranslation()
+                            }
                         }
                         background: Rectangle {
+                            id: startBtnBg
                             radius: 14
+
+                            // Çeviri sırasında çalışan nefes alma (pulsating) animasyonu
+                            SequentialAnimation on opacity {
+                                running: isTranslating && navIndex === 0
+                                loops: Animation.Infinite
+                                NumberAnimation { to: 0.78; duration: 900; easing.type: Easing.InOutQuad }
+                                NumberAnimation { to: 1.0;  duration: 900; easing.type: Easing.InOutQuad }
+                            }
+
                             gradient: Gradient {
                                 orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: isTranslating ? "#EF4444" : (startButton.hovered ? "#4FACFE" : "#00F2FE") }
-                                GradientStop { position: 1.0; color: isTranslating ? "#B91C1C" : (startButton.hovered ? "#00F2FE" : "#4FACFE") }
+                                GradientStop {
+                                    position: 0.0
+                                    color: isTranslating ? (startButton.hovered ? "#F87171" : "#EF4444") : (startButton.hovered ? "#4FACFE" : "#00F2FE")
+                                    Behavior on color { ColorAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                }
+                                GradientStop {
+                                    position: 1.0
+                                    color: isTranslating ? (startButton.hovered ? "#EF4444" : "#DC2626") : (startButton.hovered ? "#00F2FE" : "#4FACFE")
+                                    Behavior on color { ColorAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                }
                             }
-                            Behavior on opacity { NumberAnimation { duration: 150 } }
+
+                            // Dış neon ışıma katmanı (Glow border)
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: parent.radius
+                                color: "transparent"
+                                border.color: isTranslating ? "#EF4444" : "#00F2FE"
+                                border.width: startButton.hovered || isTranslating ? 2 : 0
+                                opacity: startButton.hovered || isTranslating ? 0.6 : 0.0
+                                Behavior on opacity { NumberAnimation { duration: 180 } }
+                                Behavior on border.width { NumberAnimation { duration: 150 } }
+                            }
                         }
-                        contentItem: RowLayout {
-                            anchors.centerIn: parent
-                            spacing: 12
-                            Label {
-                                text: appBackend.uiTrigger, isTranslating ? "⏹ " + appBackend.getTextWithDefault("btn_stop_translation", "STOP TRANSLATION") : "⚡ " + appBackend.getTextWithDefault("btn_start_translation", "START TRANSLATION →")
-                                font.pixelSize: 16; font.bold: true
-                                color: isTranslating ? "white" : (startButton.hovered ? "#0B0F17" : "#0A0D14")
-                                font.letterSpacing: 1.0
+                        contentItem: Item {
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 12
+
+                                Item {
+                                    width: 18; height: 18
+                                    anchors.verticalCenter: parent.verticalCenter
+
+                                    // STOP İkonu (Windows'un mavi emoji çizmesini önleyen saf beyaz yuvarlatılmış kare)
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 14; height: 14; radius: 3
+                                        color: "#FFFFFF"
+                                        visible: isTranslating
+                                        scale: isTranslating ? (startBtnBg.opacity < 0.9 ? 0.92 : 1.08) : 1.0
+                                        Behavior on scale { NumberAnimation { duration: 400; easing.type: Easing.InOutQuad } }
+                                    }
+
+                                    // START İkonu (⚡ Şimşek)
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "⚡"
+                                        font.pixelSize: 17
+                                        color: startButton.hovered ? "#0B0F17" : "#0A0D14"
+                                        visible: !isTranslating
+                                    }
+                                }
+
+                                Label {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: appBackend.uiTrigger, isTranslating ? appBackend.getTextWithDefault("btn_stop_translation", "STOP TRANSLATION") : appBackend.getTextWithDefault("btn_start_translation", "START TRANSLATION →")
+                                    font.pixelSize: 15; font.bold: true
+                                    color: isTranslating ? "#FFFFFF" : (startButton.hovered ? "#0B0F17" : "#0A0D14")
+                                    font.letterSpacing: 1.1
+                                }
                             }
                         }
                     }
@@ -760,9 +1195,27 @@ ApplicationWindow {
                         border.color: cardStatus.hovered ? Qt.rgba(0, 242, 254, 0.4) : clrCardBorder
                         border.width: 1
                         property bool hovered: false
+                        scale: hovered ? 1.006 : 1.0
+                        transformOrigin: Item.Center
+                        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                         Behavior on color { ColorAnimation { duration: 180 } }
+                        Behavior on border.color { ColorAnimation { duration: 180 } }
                         Behavior on Layout.preferredHeight { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
                         HoverHandler { onHoveredChanged: cardStatus.hovered = hovered }
+
+                        // QW-1 Staggered Entrance
+                        transform: Translate { id: animTrStatus; y: 16 }
+                        opacity: 0.0
+                        SequentialAnimation {
+                            id: animEntranceStatus
+                            PauseAnimation { duration: 135 }
+                            ParallelAnimation {
+                                NumberAnimation { target: animTrStatus; property: "y"; to: 0; duration: 240; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: cardStatus; property: "opacity"; to: 1.0; duration: 220; easing.type: Easing.OutQuad }
+                            }
+                        }
+                        Component.onCompleted: if (navIndex === 0) animEntranceStatus.start()
+                        Connections { target: root; function onNavIndexChanged() { if (navIndex === 0) animEntranceStatus.restart() } }
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 22
@@ -770,28 +1223,138 @@ ApplicationWindow {
 
                             RowLayout {
                                 Layout.fillWidth: true
+                                spacing: 8
                                 Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("card_status_title", "Process Status"); font.pixelSize: 16; font.bold: true; color: clrTxt }
                                 Item { Layout.fillWidth: true }
-                                Label {
-                                    id: stageLabel
-                                    text: appBackend.uiTrigger, currentStage === "idle" ? appBackend.getTextWithDefault("status_ready", "Ready - Waiting to Start") : currentStage
-                                    font.pixelSize: 13; font.bold: true; color: clrAccent
+
+                                // Canlı aktivite sonar noktası (Radar Pulse Dot)
+                                Rectangle {
+                                    id: stageActivityDot
+                                    width: 8; height: 8; radius: 4
+                                    color: currentStage === "completed" ? clrSuccess : (isTranslating ? clrAccent : "transparent")
+                                    visible: isTranslating || currentStage === "completed"
+                                    scale: isTranslating || currentStage === "completed" ? 1.0 : 0.0
+
+                                    Behavior on color { ColorAnimation { duration: 250 } }
+                                    Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: parent.width; height: parent.height; radius: width / 2
+                                        color: parent.color
+                                        opacity: 0.0
+
+                                        SequentialAnimation on scale {
+                                            running: isTranslating && navIndex === 0
+                                            loops: Animation.Infinite
+                                            NumberAnimation { from: 1.0; to: 2.6; duration: 1100; easing.type: Easing.OutQuad }
+                                        }
+                                        SequentialAnimation on opacity {
+                                            running: isTranslating && navIndex === 0
+                                            loops: Animation.Infinite
+                                            NumberAnimation { from: 0.8; to: 0.0; duration: 1100; easing.type: Easing.OutQuad }
+                                        }
+                                    }
+                                }
+
+                                Row {
+                                    spacing: 1
+                                    Layout.alignment: Qt.AlignVCenter
+
+                                    Label {
+                                        id: stageLabel
+                                        text: appBackend.uiTrigger, getStageDisplayText(currentStage)
+                                        font.pixelSize: 13; font.bold: true
+                                        color: currentStage === "completed" ? clrSuccess : (currentStage === "error" ? clrError : clrAccent)
+                                        scale: currentStage === "completed" ? 1.06 : 1.0
+                                        transformOrigin: Item.Right
+
+                                        Behavior on color {
+                                            ColorAnimation { duration: 250 }
+                                        }
+                                        Behavior on scale {
+                                            NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
+                                        }
+                                    }
+
+                                    // Akıcı canlı üç-nokta nabzı (Live Ellipsis Flow - Anti-Freeze Indicator)
+                                    Label {
+                                        id: stageDots
+                                        text: dotCount === 0 ? "" : (dotCount === 1 ? "." : (dotCount === 2 ? ".." : "..."))
+                                        property int dotCount: 0
+                                        font.pixelSize: 13; font.bold: true
+                                        color: clrAccent
+                                        visible: isTranslating
+                                        width: 14
+                                        height: stageLabel.height
+                                        verticalAlignment: Text.AlignVCenter
+
+                                        Timer {
+                                            interval: 400
+                                            repeat: true
+                                            running: isTranslating && navIndex === 0
+                                            onTriggered: stageDots.dotCount = (stageDots.dotCount + 1) % 4
+                                        }
+                                    }
                                 }
                             }
 
-                            // İlerleme Barı
+                            // İlerleme Barı (Akıcı dolum & Shimmer animasyonu)
                             ProgressBar {
                                 id: progressBar
                                 Layout.fillWidth: true; height: 12
                                 value: 0.0
-                                background: Rectangle { radius: 6; color: clrInput }
+
+                                background: Rectangle {
+                                    radius: 6
+                                    color: clrInput
+                                    border.color: Qt.rgba(255, 255, 255, 0.06)
+                                    border.width: 1
+                                }
+
                                 contentItem: Item {
+                                    clip: true
+
                                     Rectangle {
-                                        width: progressBar.visualPosition * progressBar.width; height: progressBar.height; radius: 6
+                                        id: progressFill
+                                        width: progressBar.visualPosition * parent.width
+                                        height: parent.height
+                                        radius: 6
+
+                                        Behavior on width {
+                                            NumberAnimation { duration: 250; easing.type: Easing.OutCubic }
+                                        }
+
                                         gradient: Gradient {
                                             orientation: Gradient.Horizontal
                                             GradientStop { position: 0.0; color: clrAccent }
                                             GradientStop { position: 1.0; color: clrAccent2 }
+                                        }
+                                    }
+
+                                    // İşlem sürerken tüm bar boyunca süzülen tarama ışığı (Full-Bar Scanning Shimmer)
+                                    Rectangle {
+                                        id: progressShimmer
+                                        width: 72
+                                        height: parent.height
+                                        visible: isTranslating
+                                        radius: 6
+                                        gradient: Gradient {
+                                            orientation: Gradient.Horizontal
+                                            GradientStop { position: 0.0; color: "transparent" }
+                                            GradientStop { position: 0.2; color: Qt.rgba(255, 255, 255, 0.08) }
+                                            GradientStop { position: 0.5; color: Qt.rgba(255, 255, 255, 0.38) }
+                                            GradientStop { position: 0.8; color: Qt.rgba(255, 255, 255, 0.08) }
+                                            GradientStop { position: 1.0; color: "transparent" }
+                                        }
+
+                                        NumberAnimation on x {
+                                            running: isTranslating && navIndex === 0
+                                            loops: Animation.Infinite
+                                            from: -progressShimmer.width
+                                            to: progressBar.width + progressShimmer.width
+                                            duration: 1800
+                                            easing.type: Easing.Linear
                                         }
                                     }
                                 }
@@ -804,18 +1367,79 @@ ApplicationWindow {
                                 Label { text: Math.round(progressBar.value * 100) + "%"; font.pixelSize: 13; font.bold: true; color: clrTxt }
                             }
 
-                            // İstatistik Kartı Açılımı
+                            // İstatistik Kartı Açılımı (QW-2 Celebration Spring & Badge Bounce)
                             RowLayout {
+                                id: statsRow
                                 Layout.fillWidth: true
                                 visible: statsVisible
+
                                 Rectangle {
-                                    Layout.fillWidth: true; height: 42; radius: 10; color: clrInput
-                                    border.color: clrSuccess; border.width: 1
+                                    id: statsBannerRect
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 46
+                                    radius: 10
+                                    color: clrSuccessDim
+                                    border.color: clrSuccess
+                                    border.width: 1
+                                    clip: true
+
+                                    scale: statsVisible ? 1.0 : 0.90
+                                    opacity: statsVisible ? 1.0 : 0.0
+                                    transformOrigin: Item.Center
+
+                                    Behavior on scale {
+                                        NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.4 }
+                                    }
+                                    Behavior on opacity {
+                                        NumberAnimation { duration: 220; easing.type: Easing.OutQuad }
+                                    }
+
                                     RowLayout {
-                                        anchors.fill: parent; anchors.margins: 12
-                                        Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("stats_completed_banner", "🎉 Çeviri Başarıyla Tamamlandı!"); font.bold: true; color: clrSuccess; font.pixelSize: 13 }
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 14
+                                        spacing: 10
+
+                                        // Kutlama rozeti (Spring bounce tick)
+                                        Rectangle {
+                                            id: successBadge
+                                            width: 24; height: 24; radius: 12
+                                            color: clrSuccess
+                                            scale: statsVisible ? 1.0 : 0.0
+                                            opacity: statsVisible ? 1.0 : 0.0
+                                            transformOrigin: Item.Center
+
+                                            Behavior on scale {
+                                                NumberAnimation { duration: 420; easing.type: Easing.OutBack; easing.overshoot: 1.8 }
+                                            }
+                                            Behavior on opacity {
+                                                NumberAnimation { duration: 200 }
+                                            }
+
+                                            Label {
+                                                anchors.centerIn: parent
+                                                text: "✓"
+                                                color: "#FFFFFF"
+                                                font.bold: true
+                                                font.pixelSize: 13
+                                            }
+                                        }
+
+                                        Label {
+                                            text: appBackend.uiTrigger, appBackend.getTextWithDefault("stats_completed_banner", "🎉 Çeviri Başarıyla Tamamlandı!")
+                                            font.bold: true
+                                            color: clrSuccess
+                                            font.pixelSize: 13
+                                        }
+
                                         Item { Layout.fillWidth: true }
-                                        Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("stats_summary_total", "Toplam:") + " " + totalLines + " | " + appBackend.getTextWithDefault("stats_summary_translated", "Çevrilen:") + " " + translatedLines + " (" + successRate.toFixed(1) + "%)"; color: clrTxt; font.pixelSize: 13; font.bold: true }
+
+                                        Label {
+                                            text: appBackend.uiTrigger, appBackend.getTextWithDefault("stats_summary_total", "Toplam:") + " " + totalLines + " | " + appBackend.getTextWithDefault("stats_summary_translated", "Çevrilen:") + " " + translatedLines + " (" + successRate.toFixed(1) + "%)"
+                                            color: clrTxt
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                        }
                                     }
                                 }
                             }
@@ -832,8 +1456,26 @@ ApplicationWindow {
                         border.color: cardLog.hovered ? Qt.rgba(0, 242, 254, 0.4) : clrCardBorder
                         border.width: 1
                         property bool hovered: false
+                        scale: hovered ? 1.006 : 1.0
+                        transformOrigin: Item.Center
+                        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                         Behavior on color { ColorAnimation { duration: 180 } }
+                        Behavior on border.color { ColorAnimation { duration: 180 } }
                         HoverHandler { onHoveredChanged: cardLog.hovered = hovered }
+
+                        // QW-1 Staggered Entrance
+                        transform: Translate { id: animTrLog; y: 16 }
+                        opacity: 0.0
+                        SequentialAnimation {
+                            id: animEntranceLog
+                            PauseAnimation { duration: 180 }
+                            ParallelAnimation {
+                                NumberAnimation { target: animTrLog; property: "y"; to: 0; duration: 240; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: cardLog; property: "opacity"; to: 1.0; duration: 220; easing.type: Easing.OutQuad }
+                            }
+                        }
+                        Component.onCompleted: if (navIndex === 0) animEntranceLog.start()
+                        Connections { target: root; function onNavIndexChanged() { if (navIndex === 0) animEntranceLog.restart() } }
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 18
@@ -845,9 +1487,20 @@ ApplicationWindow {
                                 Item { Layout.fillWidth: true }
                                 Button {
                                     height: 28; text: appBackend.uiTrigger, "📜 " + appBackend.getTextWithDefault("view_all_logs", "Tüm Logları Aç ->")
+                                    scale: down ? 0.96 : (hovered ? 1.04 : 1.0)
+                                    transformOrigin: Item.Center
+                                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                                     onClicked: navIndex = 2
-                                    background: Rectangle { radius: 6; color: "transparent" }
-                                    contentItem: Label { text: parent.text; color: clrAccent; font.pixelSize: 12; font.underline: true }
+                                    background: Rectangle {
+                                        radius: 6
+                                        color: parent.hovered ? Qt.rgba(0, 242, 254, 0.1) : "transparent"
+                                        Behavior on color { ColorAnimation { duration: 140 } }
+                                    }
+                                    contentItem: Label {
+                                        text: parent.text; color: parent.hovered ? "#FFFFFF" : clrAccent
+                                        font.pixelSize: 12; font.underline: true
+                                        Behavior on color { ColorAnimation { duration: 140 } }
+                                    }
                                 }
                             }
 
@@ -876,10 +1529,20 @@ ApplicationWindow {
             // SEKME 1: SETTINGS (TAM SAYFA GELİŞMİŞ AYARLAR)
             // ═════════════════════════════════════════════════════════════
             ScrollView {
+                id: viewSettings
                 clip: true
                 contentWidth: availableWidth
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                 ScrollBar.vertical: ScrollBar {}
+
+                transform: Translate { id: animTrSettings; y: 14 }
+                opacity: 0.0
+                ParallelAnimation {
+                    id: animEntranceSettings
+                    NumberAnimation { target: animTrSettings; property: "y"; from: 14; to: 0; duration: 220; easing.type: Easing.OutCubic }
+                    NumberAnimation { target: viewSettings; property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutQuad }
+                }
+                onVisibleChanged: if (visible) animEntranceSettings.restart()
 
                 ColumnLayout {
                     width: parent.width
@@ -1212,7 +1875,18 @@ ApplicationWindow {
                                         TextField {
                                             Layout.fillWidth: true; height: 40; text: appBackend.openaiApiKey; echoMode: TextInput.Password; placeholderText: "sk-..."
                                             onEditingFinished: appBackend.openaiApiKey = text
-                                            background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                            background: Rectangle {
+                                                radius: 8; color: clrInput
+                                                border.color: parent.activeFocus ? clrAccent : clrCardBorder; border.width: 1
+                                                Behavior on border.color { ColorAnimation { duration: 150 } }
+                                                Rectangle {
+                                                    anchors.fill: parent; anchors.margins: -3; radius: parent.radius + 2; color: "transparent"
+                                                    border.color: clrAccent; border.width: 2; opacity: parent.parent.activeFocus ? 0.35 : 0.0
+                                                    scale: parent.parent.activeFocus ? 1.0 : 0.98
+                                                    Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                                    Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                                }
+                                            }
                                         }
                                     }
                                     ColumnLayout {
@@ -1221,7 +1895,18 @@ ApplicationWindow {
                                         TextField {
                                             Layout.fillWidth: true; height: 40; text: appBackend.openaiModel; placeholderText: appBackend.selectedEngine === "deepseek" ? "deepseek-v4-flash" : "gpt-4o-mini"
                                             onEditingFinished: appBackend.openaiModel = text
-                                            background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                            background: Rectangle {
+                                                radius: 8; color: clrInput
+                                                border.color: parent.activeFocus ? clrAccent : clrCardBorder; border.width: 1
+                                                Behavior on border.color { ColorAnimation { duration: 150 } }
+                                                Rectangle {
+                                                    anchors.fill: parent; anchors.margins: -3; radius: parent.radius + 2; color: "transparent"
+                                                    border.color: clrAccent; border.width: 2; opacity: parent.parent.activeFocus ? 0.35 : 0.0
+                                                    scale: parent.parent.activeFocus ? 1.0 : 0.98
+                                                    Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                                    Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1231,7 +1916,18 @@ ApplicationWindow {
                                     TextField {
                                         Layout.fillWidth: true; height: 40; text: appBackend.openaiBaseUrl; placeholderText: appBackend.selectedEngine === "deepseek" ? "https://api.deepseek.com/v1" : "https://api.openai.com/v1"
                                         onEditingFinished: appBackend.openaiBaseUrl = text
-                                        background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                        background: Rectangle {
+                                            radius: 8; color: clrInput
+                                            border.color: parent.activeFocus ? clrAccent : clrCardBorder; border.width: 1
+                                            Behavior on border.color { ColorAnimation { duration: 150 } }
+                                            Rectangle {
+                                                anchors.fill: parent; anchors.margins: -3; radius: parent.radius + 2; color: "transparent"
+                                                border.color: clrAccent; border.width: 2; opacity: parent.parent.activeFocus ? 0.35 : 0.0
+                                                scale: parent.parent.activeFocus ? 1.0 : 0.98
+                                                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1249,7 +1945,18 @@ ApplicationWindow {
                                         TextField {
                                             Layout.fillWidth: true; height: 40; text: appBackend.geminiApiKey; echoMode: TextInput.Password; placeholderText: "AIza..."
                                             onEditingFinished: appBackend.geminiApiKey = text
-                                            background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                            background: Rectangle {
+                                                radius: 8; color: clrInput
+                                                border.color: parent.activeFocus ? clrAccent : clrCardBorder; border.width: 1
+                                                Behavior on border.color { ColorAnimation { duration: 150 } }
+                                                Rectangle {
+                                                    anchors.fill: parent; anchors.margins: -3; radius: parent.radius + 2; color: "transparent"
+                                                    border.color: clrAccent; border.width: 2; opacity: parent.parent.activeFocus ? 0.35 : 0.0
+                                                    scale: parent.parent.activeFocus ? 1.0 : 0.98
+                                                    Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                                    Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                                }
+                                            }
                                         }
                                     }
                                     ColumnLayout {
@@ -1258,7 +1965,18 @@ ApplicationWindow {
                                         TextField {
                                             Layout.fillWidth: true; height: 40; text: appBackend.geminiModel; placeholderText: "gemini-2.0-flash"
                                             onEditingFinished: appBackend.geminiModel = text
-                                            background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                            background: Rectangle {
+                                                radius: 8; color: clrInput
+                                                border.color: parent.activeFocus ? clrAccent : clrCardBorder; border.width: 1
+                                                Behavior on border.color { ColorAnimation { duration: 150 } }
+                                                Rectangle {
+                                                    anchors.fill: parent; anchors.margins: -3; radius: parent.radius + 2; color: "transparent"
+                                                    border.color: clrAccent; border.width: 2; opacity: parent.parent.activeFocus ? 0.35 : 0.0
+                                                    scale: parent.parent.activeFocus ? 1.0 : 0.98
+                                                    Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                                    Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1287,6 +2005,98 @@ ApplicationWindow {
                                             Layout.fillWidth: true; height: 40; text: appBackend.localLlmModel; placeholderText: "qwen2.5-coder:7b-instruct, llama3..."
                                             onEditingFinished: appBackend.localLlmModel = text
                                             background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // AI Çeviri Modu (Translation Mode: Scene / JSON / XML) & Sahne Blok Boyutu
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 14
+                                visible: appBackend.selectedEngine === "local_llm" || appBackend.selectedEngine === "openai" || appBackend.selectedEngine === "deepseek" || appBackend.selectedEngine === "gemini" || appBackend.selectedEngine === "custom" || appBackend.selectedEngine === "google"
+
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 18
+
+                                    // Çeviri Modu Seçimi
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: appBackend.aiBatchFormat === "scene" ? 3 : 1
+                                        spacing: 5
+
+                                        Label {
+                                            text: appBackend.uiTrigger, appBackend.getTextWithDefault("ai_mode_label", "Translation Mode:");
+                                            color: clrTxt; font.bold: true; font.pixelSize: 13
+                                        }
+
+                                        ComboBox {
+                                            id: aiBatchModeCombo
+                                            Layout.fillWidth: true; height: 40
+                                            function modeModel() {
+                                                appBackend.uiTrigger
+                                                return [
+                                                    {"id": "scene", "name": appBackend.getTextWithDefault("ai_mode_scene", "Scene / Screenplay Mode (Context-Aware)")},
+                                                    {"id": "json", "name": appBackend.getTextWithDefault("ai_mode_json", "Standard Structured Mode (JSON)")},
+                                                    {"id": "xml", "name": appBackend.getTextWithDefault("ai_mode_xml", "Legacy Grouping Mode (XML)")}
+                                                ]
+                                            }
+                                            model: modeModel()
+                                            textRole: "name"; valueRole: "id"
+                                            Component.onCompleted: currentIndex = indexOfValue(appBackend.aiBatchFormat || "scene")
+                                            onActivated: appBackend.aiBatchFormat = currentValue
+                                            background: Rectangle { radius: 8; color: clrInput; border.color: parent.hovered ? clrAccent : clrCardBorder; border.width: 1 }
+                                            contentItem: Label { leftPadding: 14; rightPadding: 14; text: aiBatchModeCombo.displayText; color: clrTxt; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                                            delegate: ItemDelegate {
+                                                width: aiBatchModeCombo.width
+                                                contentItem: Label { text: modelData.name; color: clrTxt; font.pixelSize: 12; leftPadding: 14; elide: Text.ElideRight }
+                                                background: Rectangle { color: hovered ? Qt.rgba(0, 242, 254, 0.12) : "transparent" }
+                                            }
+                                            popup: Popup {
+                                                y: aiBatchModeCombo.height; width: aiBatchModeCombo.width
+                                                implicitHeight: Math.min(contentItem.implicitHeight, 200)
+                                                padding: 4
+                                                contentItem: ListView { clip: true; implicitHeight: contentHeight; model: aiBatchModeCombo.delegateModel; ScrollBar.vertical: ScrollBar {} }
+                                                background: Rectangle { color: clrCard; radius: 8; border.color: clrCardBorder; border.width: 1 }
+                                            }
+                                        }
+                                    }
+
+                                    // Sahne Blok Boyutu (Scene Block Size) - Sadece Sahne Modunda Aktif
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 2
+                                        spacing: 6
+                                        visible: appBackend.aiBatchFormat === "scene"
+
+                                        Label {
+                                            text: appBackend.uiTrigger, appBackend.getTextWithDefault("ai_scene_size_label", "Scene Block Size (Lines)") + ": " + Math.round(aiSceneSlider.value)
+                                            color: clrTxt; font.bold: true; font.pixelSize: 13
+                                        }
+
+                                        Slider {
+                                            id: aiSceneSlider
+                                            Layout.fillWidth: true
+                                            from: 5; to: 50; stepSize: 5
+                                            value: appBackend.aiSceneBatchSize
+                                            onMoved: appBackend.aiSceneBatchSize = Math.round(value)
+                                        }
+                                    }
+                                }
+
+                                // Seçili Moda Göre Canlı Açıklama / Rehber
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 12
+                                    color: clrTxt2
+                                    text: {
+                                        appBackend.uiTrigger
+                                        if (appBackend.aiBatchFormat === "scene") {
+                                            return appBackend.getTextWithDefault("ai_mode_scene_desc", "💡 Diyalogları senaryo akışı halinde iletir. Karakter hitaplarını, cinsiyet uyumunu ve bağlamı en iyi koruyan moddur (Görsel romanlar için önerilen).")
+                                        } else if (appBackend.aiBatchFormat === "json") {
+                                            return appBackend.getTextWithDefault("ai_mode_json_desc", "💡 Metinleri anahtar-değer çifti olarak iletir. Sıfır satır kayması ve katı veri bütünlüğü sağlar; menü ve sistem metinleri için idealdir.")
+                                        } else {
+                                            return appBackend.getTextWithDefault("ai_mode_xml_desc", "💡 Metinleri XML etiketleriyle paketler. JSON üretmekte zorlanan küçük veya eski modeller için en güvenli seçenektir.")
                                         }
                                     }
                                 }
@@ -1495,7 +2305,28 @@ ApplicationWindow {
                                     text: appBackend.aiCustomSystemPrompt
                                     placeholderText: "Translate the following Ren'Py visual novel dialogue accurately while keeping tags..."
                                     onEditingFinished: appBackend.aiCustomSystemPrompt = text
-                                    background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
+                                    font.pixelSize: 12; color: clrTxt
+                                    background: Rectangle {
+                                        radius: 8
+                                        color: clrInput
+                                        border.color: aiPromptField.activeFocus ? clrAccent : clrCardBorder
+                                        border.width: 1
+                                        Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                        // QW-3 Focus Ring Glow (macOS/Fluent tarzı yumuşak ışıma)
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            radius: parent.radius + 2
+                                            color: "transparent"
+                                            border.color: clrAccent
+                                            border.width: 2
+                                            opacity: aiPromptField.activeFocus ? 0.35 : 0.0
+                                            scale: aiPromptField.activeFocus ? 1.0 : 0.98
+                                            Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+                                            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1509,9 +2340,19 @@ ApplicationWindow {
             // SEKME 2: LOG CONSOLE
             // ═════════════════════════════════════════════════════════════
             ScrollView {
+                id: viewLogs
                 clip: true; contentWidth: availableWidth
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                 ScrollBar.vertical: ScrollBar {}
+
+                transform: Translate { id: animTrLogs; y: 14 }
+                opacity: 0.0
+                ParallelAnimation {
+                    id: animEntranceLogs
+                    NumberAnimation { target: animTrLogs; property: "y"; from: 14; to: 0; duration: 220; easing.type: Easing.OutCubic }
+                    NumberAnimation { target: viewLogs; property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutQuad }
+                }
+                onVisibleChanged: if (visible) animEntranceLogs.restart()
 
                 ColumnLayout {
                     width: parent.width - 48; anchors.horizontalCenter: parent.horizontalCenter
@@ -1572,10 +2413,20 @@ ApplicationWindow {
         // SEKME 3: TOOLBOX
         // ═════════════════════════════════════════════════════════════
         ScrollView {
+            id: viewToolbox
             clip: true
             contentWidth: availableWidth
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ScrollBar.vertical: ScrollBar {}
+
+            transform: Translate { id: animTrToolbox; y: 14 }
+            opacity: 0.0
+            ParallelAnimation {
+                id: animEntranceToolbox
+                NumberAnimation { target: animTrToolbox; property: "y"; from: 14; to: 0; duration: 220; easing.type: Easing.OutCubic }
+                NumberAnimation { target: viewToolbox; property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutQuad }
+            }
+            onVisibleChanged: if (visible) animEntranceToolbox.restart()
 
             ColumnLayout {
                 width: parent.width
@@ -1630,7 +2481,7 @@ ApplicationWindow {
                         Button {
                             height: 42
                             Layout.preferredWidth: Math.max(220, implicitContentWidth + 36)
-                            text: appBackend.uiTrigger, "⚡ " + appBackend.getTextWithDefault("btn_run_font", "Font Enjektörünü Çalıştır")
+                            text: appBackend.uiTrigger, "⚡ " + appBackend.getTextWithDefault("btn_run_font", "Font Uyumluluğunu Kontrol Et")
                             onClicked: appBackend.runToolFontHelper()
                             background: Rectangle {
                                 radius: 10; color: parent.hovered ? clrCardHover : clrInput
@@ -1643,7 +2494,7 @@ ApplicationWindow {
                         Button {
                             height: 42
                             Layout.preferredWidth: Math.max(260, implicitContentWidth + 36)
-                            text: appBackend.uiTrigger, "🔽 " + appBackend.getTextWithDefault("btn_font_inject", "Download & Inject Google Font")
+                            text: appBackend.uiTrigger, "🔽 " + appBackend.getTextWithDefault("btn_font_inject", "Uyumlu Fontu İndir ve Enjekte Et")
                             onClicked: appBackend.runToolFontInject()
                             background: Rectangle {
                                 radius: 10; color: parent.hovered ? clrCardHover : clrInput
@@ -1741,9 +2592,19 @@ ApplicationWindow {
         // SEKME 4: GLOSSARY — TERİM SÖZLÜĞÜ YÖNETİMİ
         // ═════════════════════════════════════════════════════════════
         ScrollView {
+            id: viewGlossary
             clip: true; contentWidth: availableWidth
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ScrollBar.vertical: ScrollBar {}
+
+            transform: Translate { id: animTrGlossary; y: 14 }
+            opacity: 0.0
+            ParallelAnimation {
+                id: animEntranceGlossary
+                NumberAnimation { target: animTrGlossary; property: "y"; from: 14; to: 0; duration: 220; easing.type: Easing.OutCubic }
+                NumberAnimation { target: viewGlossary; property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutQuad }
+            }
+            onVisibleChanged: if (visible) animEntranceGlossary.restart()
 
             ColumnLayout {
                 width: parent.width - 48; spacing: 18; anchors.horizontalCenter: parent.horizontalCenter
@@ -1856,125 +2717,864 @@ ApplicationWindow {
         }
     }
 
-    // ── Toast Bildirim Köşesi ─────────────────────────────────────────────
-    Rectangle {
+    // ── Toast Bildirim Köşesi (Fluent Glass & Slide-in) ────────────────────
+    ToastNotification {
         id: toast
         parent: root.contentItem
-        z: 999
-        anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 28
-        width: Math.min(500, toastText.implicitWidth + 56); radius: 12
-        height: Math.max(46, toastText.implicitHeight + 28)
-        property string message: ""
-        property string toastType: "info"
-        color: toastType === "success" ? "#064E3B" : toastType === "error" ? "#7F1D1D" : "#1E293B"
-        border.color: toastType === "success" ? clrSuccess : toastType === "error" ? clrError : clrAccent
-        border.width: 1; opacity: 0.0; visible: opacity > 0
-        Behavior on opacity { NumberAnimation { duration: 250 } }
-        RowLayout {
-            anchors.fill: parent; anchors.margins: 14; spacing: 12
-            Label { text: toast.toastType === "success" ? "✓" : toast.toastType === "error" ? "✕" : "ℹ"; color: "white"; font.bold: true }
-            Label { id: toastText; text: toast.message; color: "white"; font.pixelSize: 13; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        }
-        Timer { id: toastTimer; interval: 3500; onTriggered: toast.opacity = 0.0 }
+        clrSuccess: root.clrSuccess
+        clrError: root.clrError
+        clrWarn: root.clrWarn
+        clrAccent: root.clrAccent
+        clrTxt: root.clrTxt
     }
 
     // ── Uyarı ve Tamamlanma Popup Diyalogları ─────────────────────────────
-    Dialog {
+    WarningDialog {
         id: warningDialog
-        anchors.centerIn: parent; width: Math.min(480, root.width * 0.8)
-        title: titleText; property string titleText: ""; property string bodyText: ""
-        modal: true; standardButtons: Dialog.Ok
-        contentItem: Label { text: warningDialog.bodyText; color: clrTxt; wrapMode: Text.Wrap }
+        clrCard: root.clrCard
+        clrWarn: root.clrWarn
+        clrWarnDim: root.clrWarnDim
+        clrTxt: root.clrTxt
+        clrTxtDim: root.clrTxtDim
+        clrInput: root.clrInput
     }
 
     Dialog {
         id: completionDialog
-        anchors.centerIn: parent; width: Math.min(540, root.width * 0.85)
-        title: appBackend.getTextWithDefault("completion_summary_title", "🎉 Translation and Build Summary Report"); modal: true
-        property string summaryText: ""; property string outputPath: ""; property string diagPath: ""
-        standardButtons: Dialog.Ok
+        anchors.centerIn: parent
+        width: Math.min(540, root.width * 0.88)
+        padding: 0
+        header: null
+        footer: null
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        standardButtons: Dialog.NoButton
+
+        property string summaryText: ""
+        property string outputPath: ""
+        property string diagPath: ""
+
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 200; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.92; to: 1.0; duration: 240; easing.type: Easing.OutBack; easing.overshoot: 1.3 }
+        }
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1.0; to: 0.0; duration: 150; easing.type: Easing.InQuad }
+            NumberAnimation { property: "scale"; from: 1.0; to: 0.94; duration: 150; easing.type: Easing.InQuad }
+        }
+
+        Overlay.modal: Rectangle {
+            color: Qt.rgba(0, 0, 0, 0.65)
+        }
+
+        background: Rectangle {
+            color: clrCard
+            radius: 18
+            border.color: Qt.rgba(0, 242, 254, 0.45)
+            border.width: 1.5
+            clip: true
+
+            // Üst kısımdaki hafif neon gradyan vurgusu
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 3
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: clrAccent }
+                    GradientStop { position: 1.0; color: clrAccent2 }
+                }
+            }
+        }
+
         contentItem: ColumnLayout {
-            spacing: 14
-            Label { text: completionDialog.summaryText; color: clrTxt; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            Button { text: "📂 " + appBackend.getTextWithDefault("open_output_folder", "Çıktı Klasörünü Aç"); onClicked: if(completionDialog.outputPath) appBackend.openLocalPath(completionDialog.outputPath) }
+            spacing: 18
+
+            // 1. Üst Başlık ve Rozet
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 20
+                Layout.topMargin: 20
+                spacing: 14
+
+                Rectangle {
+                    width: 42; height: 42; radius: 21
+                    color: clrSuccessDim
+                    border.color: clrSuccess; border.width: 1.5
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "🎉"
+                        font.pixelSize: 22
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 3
+                    Layout.fillWidth: true
+
+                    Label {
+                        text: cleanModalTitle(appBackend.uiTrigger, appBackend.getTextWithDefault("completion_summary_title", "Çeviri ve Derleme Tamamlandı"))
+                        font.pixelSize: 17; font.bold: true; color: clrTxt
+                    }
+                    Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("completion_summary_subtitle", "Oyun yerelleştirme dosyaları başarıyla üretildi.")
+                        font.pixelSize: 12; color: clrTxt2
+                    }
+                }
+
+                // Sağ üst kapatma '✕' butonu
+                Rectangle {
+                    width: 32; height: 32; radius: 16
+                    color: closeCompletionMa.containsMouse ? Qt.rgba(255, 255, 255, 0.12) : "transparent"
+                    scale: closeCompletionMa.pressed ? 0.92 : (closeCompletionMa.containsMouse ? 1.08 : 1.0)
+                    Behavior on scale { NumberAnimation { duration: 120 } }
+                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: closeCompletionMa.containsMouse ? "#FFFFFF" : clrTxtDim
+                        font.pixelSize: 13
+                        font.bold: true
+                    }
+                    MouseArea {
+                        id: closeCompletionMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: completionDialog.close()
+                    }
+                }
+            }
+
+            // 2. Özet Bilgi Kartı
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
+                Layout.preferredHeight: summaryCol.implicitHeight + 24
+                radius: 12
+                color: clrInput
+                border.color: Qt.rgba(255, 255, 255, 0.08)
+                border.width: 1
+
+                ColumnLayout {
+                    id: summaryCol
+                    anchors.fill: parent
+                    anchors.margins: 14
+                    spacing: 10
+
+                    RowLayout {
+                        spacing: 10
+                        Layout.fillWidth: true
+
+                        Rectangle {
+                            width: 26; height: 26; radius: 6
+                            color: Qt.rgba(0, 242, 254, 0.12)
+                            Layout.alignment: Qt.AlignTop
+                            Label {
+                                anchors.centerIn: parent
+                                text: "📊"
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        Label {
+                            text: completionDialog.summaryText
+                            color: clrTxt
+                            font.pixelSize: 13
+                            font.weight: Font.Medium
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                            lineHeight: 1.35
+                        }
+                    }
+
+                    // Çıktı klasör yolu (varsa)
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 32
+                        radius: 7
+                        color: "#080B12"
+                        border.color: Qt.rgba(255, 255, 255, 0.06)
+                        border.width: 1
+                        visible: completionDialog.outputPath.length > 0
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
+
+                            Label {
+                                text: "📁"
+                                font.pixelSize: 13
+                            }
+                            Label {
+                                text: completionDialog.outputPath
+                                color: clrTxtDim
+                                font.pixelSize: 11
+                                font.family: "Consolas"
+                                elide: Text.ElideMiddle
+                                Layout.fillWidth: true
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Alt Butonlar Grubu
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
+                Layout.bottomMargin: 20
+                spacing: 12
+
+                // Çıktı Klasörünü Aç (Secondary Action Button)
+                Button {
+                    id: openFolderBtn
+                    Layout.fillWidth: true; height: 42
+                    visible: completionDialog.outputPath.length > 0
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: if (completionDialog.outputPath) appBackend.openLocalPath(completionDialog.outputPath)
+
+                    background: Rectangle {
+                        radius: 10
+                        color: openFolderBtn.down ? Qt.rgba(0, 242, 254, 0.18) : (openFolderBtn.hovered ? Qt.rgba(0, 242, 254, 0.10) : clrInput)
+                        border.color: openFolderBtn.hovered ? clrAccent : Qt.rgba(255, 255, 255, 0.12)
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: RowLayout {
+                        spacing: 8
+                        Item { Layout.fillWidth: true }
+                        Label { text: "📂"; font.pixelSize: 14 }
+                        Label {
+                            text: appBackend.uiTrigger, appBackend.getTextWithDefault("open_output_folder", "Çıktı Klasörünü Aç")
+                            color: openFolderBtn.hovered ? clrAccent : clrTxt
+                            font.bold: true; font.pixelSize: 13
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                }
+
+                // Tamam (Primary Action Button)
+                Button {
+                    id: completionOkBtn
+                    Layout.preferredWidth: completionDialog.outputPath.length > 0 ? 130 : parent.width
+                    Layout.fillWidth: completionDialog.outputPath.length === 0
+                    height: 42
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: completionDialog.close()
+
+                    background: Rectangle {
+                        radius: 10
+                        color: completionOkBtn.hovered ? "#38BDF8" : "#00F2FE"
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: completionOkBtn.hovered ? "#38BDF8" : "#00F2FE" }
+                            GradientStop { position: 1.0; color: completionOkBtn.hovered ? "#00F2FE" : "#4FACFE" }
+                        }
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("dialog_ok", "Tamam")
+                        color: "#080C14"
+                        font.bold: true
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
         }
     }
 
     Dialog {
         id: updateDialog
-        anchors.centerIn: parent; width: Math.min(480, root.width * 0.8)
-        title: appBackend.uiTrigger, appBackend.getTextWithDefault("update_available_title", "🚀 New Version Available"); modal: true
-        property string latestVersion: ""; property string releaseUrl: ""
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        contentItem: Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("update_available_msg", "New Version: ") + updateDialog.latestVersion + "\n" + appBackend.getTextWithDefault("update_available_click", "Press OK to download."); color: clrTxt; wrapMode: Text.Wrap }
-        onAccepted: if(releaseUrl) Qt.openUrlExternally(releaseUrl)
+        anchors.centerIn: parent
+        width: Math.min(480, root.width * 0.85)
+        padding: 0
+        header: null
+        footer: null
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        standardButtons: Dialog.NoButton
+        property string latestVersion: ""
+        property string releaseUrl: ""
+
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1.0; duration: 180; easing.type: Easing.OutCubic }
+        }
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1.0; to: 0.0; duration: 140; easing.type: Easing.InQuad }
+            NumberAnimation { property: "scale"; from: 1.0; to: 0.96; duration: 140; easing.type: Easing.InQuad }
+        }
+
+        Overlay.modal: Rectangle {
+            color: Qt.rgba(0, 0, 0, 0.65)
+        }
+
+        background: Rectangle {
+            color: clrCard
+            radius: 18
+            border.color: Qt.rgba(0, 242, 254, 0.45)
+            border.width: 1.5
+            clip: true
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 3
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: clrAccent }
+                    GradientStop { position: 1.0; color: clrAccent2 }
+                }
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 16
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 18
+                Layout.topMargin: 20
+                spacing: 14
+
+                Rectangle {
+                    width: 40; height: 40; radius: 20
+                    color: Qt.rgba(0, 242, 254, 0.15)
+                    border.color: clrAccent; border.width: 1.5
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "🚀"
+                        font.pixelSize: 20
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 2
+                    Layout.fillWidth: true
+
+                    Label {
+                        text: cleanModalTitle(appBackend.uiTrigger, appBackend.getTextWithDefault("update_available_title", "Yeni Sürüm Mevcut"))
+                        font.pixelSize: 17; font.bold: true; color: clrTxt
+                    }
+                    Label {
+                        text: updateDialog.latestVersion.length > 0 ? ("v" + updateDialog.latestVersion) : ""
+                        font.pixelSize: 12; color: clrAccent; font.bold: true
+                        visible: updateDialog.latestVersion.length > 0
+                    }
+                }
+
+                Rectangle {
+                    width: 30; height: 30; radius: 15
+                    color: closeUpdateMa.containsMouse ? Qt.rgba(255, 255, 255, 0.12) : "transparent"
+                    scale: closeUpdateMa.pressed ? 0.92 : (closeUpdateMa.containsMouse ? 1.08 : 1.0)
+                    Behavior on scale { NumberAnimation { duration: 120 } }
+                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: closeUpdateMa.containsMouse ? "#FFFFFF" : clrTxtDim
+                        font.pixelSize: 13; font.bold: true
+                    }
+                    MouseArea {
+                        id: closeUpdateMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: updateDialog.close()
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.preferredHeight: updateBodyCol.implicitHeight + 24
+                radius: 12
+                color: clrInput
+                border.color: Qt.rgba(255, 255, 255, 0.08)
+                border.width: 1
+
+                ColumnLayout {
+                    id: updateBodyCol
+                    anchors.fill: parent
+                    anchors.margins: 14
+                    spacing: 6
+
+                    Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("update_available_msg", "RenLocalizer'ın yeni bir sürümü yayınlandı.")
+                        color: clrTxt
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                    Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("update_available_click", "Güncellemeyi indirmek için İndir butonuna tıklayın.")
+                        color: clrTxt2
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.bottomMargin: 20
+                spacing: 12
+
+                Button {
+                    Layout.fillWidth: true; height: 40
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: updateDialog.close()
+
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.down ? Qt.rgba(255, 255, 255, 0.08) : (parent.hovered ? Qt.rgba(255, 255, 255, 0.05) : "transparent")
+                        border.color: parent.hovered ? clrTxt2 : clrCardBorder
+                        border.width: 1
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_restart_later", "Daha Sonra")
+                        color: clrTxt2
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Button {
+                    id: updateDownloadBtn
+                    Layout.preferredWidth: 140; height: 40
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: {
+                        if (updateDialog.releaseUrl) Qt.openUrlExternally(updateDialog.releaseUrl)
+                        updateDialog.close()
+                    }
+
+                    background: Rectangle {
+                        radius: 10
+                        color: updateDownloadBtn.hovered ? "#38BDF8" : clrAccent
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: updateDownloadBtn.hovered ? "#38BDF8" : "#00F2FE" }
+                            GradientStop { position: 1.0; color: updateDownloadBtn.hovered ? "#00F2FE" : "#4FACFE" }
+                        }
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, "⬇ " + appBackend.getTextWithDefault("update_download_btn", "İndir")
+                        color: "#080C14"
+                        font.bold: true
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
     }
 
     Dialog {
         id: factoryResetDialog
-        anchors.centerIn: parent; width: Math.min(520, root.width * 0.85)
-        title: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_title", "Fabrika Ayarlarına Sıfırla"); modal: true
-        standardButtons: Dialog.Yes | Dialog.No
-        contentItem: Label {
-            text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_confirm", "Tüm ayarlar, API anahtarları, sözlük ve çeviri önbellekleri kalıcı olarak silinecek ve program ilk kurulduğu haline dönecek.\n\nEmin misiniz?")
-            color: clrTxt; wrapMode: Text.Wrap
+        anchors.centerIn: parent
+        width: Math.min(500, root.width * 0.85)
+        padding: 0
+        header: null
+        footer: null
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        standardButtons: Dialog.NoButton
+
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1.0; duration: 180; easing.type: Easing.OutCubic }
         }
-        onAccepted: if (appBackend.factoryReset()) factoryResetDoneDialog.open()
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1.0; to: 0.0; duration: 140; easing.type: Easing.InQuad }
+            NumberAnimation { property: "scale"; from: 1.0; to: 0.96; duration: 140; easing.type: Easing.InQuad }
+        }
+
+        Overlay.modal: Rectangle {
+            color: Qt.rgba(0, 0, 0, 0.65)
+        }
+
+        background: Rectangle {
+            color: clrCard
+            radius: 18
+            border.color: Qt.rgba(239, 68, 68, 0.45)
+            border.width: 1.5
+            clip: true
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 3
+                color: clrError
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 16
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 18
+                Layout.topMargin: 20
+                spacing: 14
+
+                Rectangle {
+                    width: 40; height: 40; radius: 20
+                    color: Qt.rgba(239, 68, 68, 0.15)
+                    border.color: clrError; border.width: 1.5
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "⚠️"
+                        font.pixelSize: 20
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 2
+                    Layout.fillWidth: true
+
+                    Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_title", "Fabrika Ayarlarına Sıfırla")
+                        font.pixelSize: 17; font.bold: true; color: clrTxt
+                    }
+                    Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_subtitle", "Kalıcı Sıfırlama İşlemi")
+                        font.pixelSize: 12; color: clrError
+                    }
+                }
+
+                Rectangle {
+                    width: 30; height: 30; radius: 15
+                    color: closeResetMa.containsMouse ? Qt.rgba(255, 255, 255, 0.12) : "transparent"
+                    scale: closeResetMa.pressed ? 0.92 : (closeResetMa.containsMouse ? 1.08 : 1.0)
+                    Behavior on scale { NumberAnimation { duration: 120 } }
+                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: closeResetMa.containsMouse ? "#FFFFFF" : clrTxtDim
+                        font.pixelSize: 13; font.bold: true
+                    }
+                    MouseArea {
+                        id: closeResetMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: factoryResetDialog.close()
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.preferredHeight: resetBodyLbl.implicitHeight + 24
+                radius: 12
+                color: clrInput
+                border.color: Qt.rgba(255, 255, 255, 0.08)
+                border.width: 1
+
+                Label {
+                    id: resetBodyLbl
+                    anchors.fill: parent
+                    anchors.margins: 14
+                    text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_confirm", "Tüm ayarlar, API anahtarları, sözlük ve çeviri önbellekleri kalıcı olarak silinecek ve program ilk kurulduğu haline dönecek.\n\nEmin misiniz?")
+                    color: clrTxt
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 13
+                    lineHeight: 1.35
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.bottomMargin: 20
+                spacing: 12
+
+                Button {
+                    Layout.fillWidth: true; height: 40
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: factoryResetDialog.close()
+
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.down ? Qt.rgba(255, 255, 255, 0.08) : (parent.hovered ? Qt.rgba(255, 255, 255, 0.05) : "transparent")
+                        border.color: parent.hovered ? clrTxt2 : clrCardBorder
+                        border.width: 1
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("dialog_cancel", "İptal")
+                        color: clrTxt2
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Button {
+                    Layout.preferredWidth: 150; height: 40
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: {
+                        factoryResetDialog.close()
+                        if (appBackend.factoryReset())
+                            factoryResetDoneDialog.open()
+                    }
+
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.hovered ? "#DC2626" : clrError
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, "🗑 " + appBackend.getTextWithDefault("factory_reset_btn", "Evet, Sıfırla")
+                        color: "#FFFFFF"
+                        font.bold: true
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
     }
 
     Dialog {
         id: factoryResetDoneDialog
-        anchors.centerIn: parent; width: Math.min(480, root.width * 0.8)
-        title: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_done_title", "✅ Sıfırlama Tamamlandı"); modal: true
+        anchors.centerIn: parent
+        width: Math.min(480, root.width * 0.85)
+        padding: 0
+        header: null
+        footer: null
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         standardButtons: Dialog.NoButton
-        contentItem: ColumnLayout {
-            spacing: 14
-            Label {
-                text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_done_msg", "Program ilk kurulduğu haline döndü. Temiz bir başlangıç için uygulamayı yeniden başlatın; bundan sonra yaptığınız ayarlar otomatik kaydedilecektir.")
-                color: clrTxt; wrapMode: Text.Wrap; Layout.fillWidth: true
+
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 180; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1.0; duration: 180; easing.type: Easing.OutCubic }
+        }
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1.0; to: 0.0; duration: 140; easing.type: Easing.InQuad }
+            NumberAnimation { property: "scale"; from: 1.0; to: 0.96; duration: 140; easing.type: Easing.InQuad }
+        }
+
+        Overlay.modal: Rectangle {
+            color: Qt.rgba(0, 0, 0, 0.65)
+        }
+
+        background: Rectangle {
+            color: clrCard
+            radius: 18
+            border.color: Qt.rgba(16, 185, 129, 0.45)
+            border.width: 1.5
+            clip: true
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 3
+                color: clrSuccess
             }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 16
+
             RowLayout {
-                Layout.fillWidth: true; spacing: 12
-                Button {
-                    Layout.fillWidth: true; height: 40
-                    text: appBackend.uiTrigger, "🔁 " + appBackend.getTextWithDefault("factory_restart_now", "Şimdi Yeniden Başlat")
-                    onClicked: appBackend.restartApplication()
-                    background: Rectangle { radius: 8; color: parent.hovered ? clrAccent : clrCardBorder }
-                    contentItem: Label { text: parent.text; color: "white"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 18
+                Layout.topMargin: 20
+                spacing: 14
+
+                Rectangle {
+                    width: 40; height: 40; radius: 20
+                    color: clrSuccessDim
+                    border.color: clrSuccess; border.width: 1.5
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "✅"
+                        font.pixelSize: 20
+                    }
                 }
+
+                ColumnLayout {
+                    spacing: 2
+                    Layout.fillWidth: true
+
+                    Label {
+                        text: cleanModalTitle(appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_done_title", "Sıfırlama Tamamlandı"))
+                        font.pixelSize: 17; font.bold: true; color: clrTxt
+                    }
+                    Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_done_sub", "Ayarlar varsayılan duruma getirildi")
+                        font.pixelSize: 12; color: clrTxt2
+                    }
+                }
+
+                Rectangle {
+                    width: 30; height: 30; radius: 15
+                    color: closeResetDoneMa.containsMouse ? Qt.rgba(255, 255, 255, 0.12) : "transparent"
+                    scale: closeResetDoneMa.pressed ? 0.92 : (closeResetDoneMa.containsMouse ? 1.08 : 1.0)
+                    Behavior on scale { NumberAnimation { duration: 120 } }
+                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: closeResetDoneMa.containsMouse ? "#FFFFFF" : clrTxtDim
+                        font.pixelSize: 13; font.bold: true
+                    }
+                    MouseArea {
+                        id: closeResetDoneMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: factoryResetDoneDialog.close()
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.preferredHeight: resetDoneBodyLbl.implicitHeight + 24
+                radius: 12
+                color: clrInput
+                border.color: Qt.rgba(255, 255, 255, 0.08)
+                border.width: 1
+
+                Label {
+                    id: resetDoneBodyLbl
+                    anchors.fill: parent
+                    anchors.margins: 14
+                    text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_reset_done_msg", "Program ilk kurulduğu haline döndü. Temiz bir başlangıç için uygulamayı yeniden başlatın; bundan sonra yaptığınız ayarlar otomatik kaydedilecektir.")
+                    color: clrTxt
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 13
+                    lineHeight: 1.35
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.bottomMargin: 20
+                spacing: 12
+
                 Button {
                     Layout.fillWidth: true; height: 40
-                    text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_restart_later", "Daha Sonra")
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                     onClicked: factoryResetDoneDialog.close()
-                    background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
-                    contentItem: Label { text: parent.text; color: clrTxt; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.down ? Qt.rgba(255, 255, 255, 0.08) : (parent.hovered ? Qt.rgba(255, 255, 255, 0.05) : "transparent")
+                        border.color: parent.hovered ? clrTxt2 : clrCardBorder
+                        border.width: 1
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, appBackend.getTextWithDefault("factory_restart_later", "Daha Sonra")
+                        color: clrTxt2
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Button {
+                    id: factoryRestartBtn
+                    Layout.preferredWidth: 180; height: 40
+                    scale: down ? 0.97 : (hovered ? 1.02 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                    onClicked: appBackend.restartApplication()
+
+                    background: Rectangle {
+                        radius: 10
+                        color: factoryRestartBtn.hovered ? "#38BDF8" : clrAccent
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: factoryRestartBtn.hovered ? "#38BDF8" : "#00F2FE" }
+                            GradientStop { position: 1.0; color: factoryRestartBtn.hovered ? "#00F2FE" : "#4FACFE" }
+                        }
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                    }
+                    contentItem: Label {
+                        text: appBackend.uiTrigger, "🔁 " + appBackend.getTextWithDefault("factory_restart_now", "Şimdi Yeniden Başlat")
+                        color: "#080C14"
+                        font.bold: true
+                        font.pixelSize: 13
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
             }
         }
     }
 
     // ── Glossary Dialogs ─────────────────────────────────────────────────
-    Dialog {
+    GlossaryAddDialog {
         id: addGlossaryDialog
-        anchors.centerIn: parent; width: 400
-        title: appBackend.uiTrigger, appBackend.getTextWithDefault("glossary_dlg_add_title", "➕ Add Glossary Term"); modal: true
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        ColumnLayout {
-            spacing: 12; Layout.fillWidth: true
-            Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("glossary_dlg_source", "Source (Original Text):"); color: clrTxt }
-            TextField {
-                id: addGlossarySource; Layout.fillWidth: true
-                placeholderText: appBackend.getTextWithDefault("glossary_dlg_source_placeholder", "e.g. Character Name")
-                background: Rectangle { radius: 8; color: clrInput; border.color: clrAccent; border.width: 1 }
-            }
-            Label { text: appBackend.uiTrigger, appBackend.getTextWithDefault("glossary_dlg_target", "Target (Translation):"); color: clrTxt }
-            TextField {
-                id: addGlossaryTarget; Layout.fillWidth: true
-                placeholderText: appBackend.getTextWithDefault("glossary_dlg_target_placeholder", "e.g. Karakter Adı")
-                background: Rectangle { radius: 8; color: clrInput; border.color: clrCardBorder; border.width: 1 }
-            }
-        }
-        onAccepted: if (addGlossarySource.text) appBackend.addGlossaryItem(addGlossarySource.text, addGlossaryTarget.text)
+        clrCard: root.clrCard
+        clrAccent: root.clrAccent
+        clrAccent2: root.clrAccent2
+        clrTxt: root.clrTxt
+        clrTxt2: root.clrTxt2
+        clrTxtDim: root.clrTxtDim
+        clrInput: root.clrInput
+        clrCardBorder: root.clrCardBorder
     }
 
     FileDialog {

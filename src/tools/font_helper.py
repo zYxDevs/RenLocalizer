@@ -468,6 +468,12 @@ label font_test_label:
                 "Prompt",
                 "Kanit",
             ],
+            "fa": [
+                "Vazirmatn",
+                "Noto Sans Arabic",
+                "Sahel",
+                "Shabnam",
+            ],
             "tr": [
                 "Roboto",
                 "Open Sans",
@@ -487,7 +493,13 @@ label font_test_label:
             "Source Sans Pro",
         ]
         
-        return FONT_SUGGESTIONS.get(language, default_fonts)
+        norm_lang = (language or "").strip().lower()
+        try:
+            from src.tools.font_injector import _normalize_lang_code
+            norm_lang = _normalize_lang_code(norm_lang)
+        except Exception:
+            pass
+        return FONT_SUGGESTIONS.get(norm_lang, default_fonts)
 
     def analyze_font_risks(self, game_dir: str) -> Dict[str, Any]:
         """Scan project scripts for hardcoded/custom font usage.

@@ -86,8 +86,19 @@ def test_circuit_breaker_warning_emitted_once_per_episode(caplog):
 
 def test_success_decays_counter_without_full_reset():
     translator = _make_translator()
-    translator._consecutive_429_count = 3
+    router = translator._router
+    router._consecutive_primary_429 = 3
 
-    translator._consecutive_429_count = max(0, translator._consecutive_429_count - 1)
+    # Primary success must decrement counter by 1, not completely reset to 0
+    router.record_primary_success()
+    assert router._consecutive_primary_429 == 2
 
-    assert translator._consecutive_429_count == 2
+    # A second success decrements to 1
+    router.record_primary_success()
+    assert router._consecutive_primary_429 == 1
+
+    # Decrements to 0 and does not go below 0
+    router.record_primary_success()
+    assert router._consecutive_primary_429 == 0
+    router.record_primary_success()
+    assert router._consecutive_primary_429 == 0

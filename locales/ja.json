@@ -1294,5 +1294,13 @@
   "cache_cleared_toast": "Translation cache cleared.",
   "engine_local_llm": "🖥️ Local LLM (Ollama / LM Studio)",
   "source_lang_auto": "🤖 Auto-detect",
-  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags..."
+  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags...",
+  "ai_mode_label": "翻訳モード",
+  "ai_mode_scene": "シーン/脚本モード (文脈認識)",
+  "ai_mode_json": "標準構造化モード (JSON)",
+  "ai_mode_xml": "レガシーグループ化モード (XML)",
+  "ai_scene_size_label": "シーンブロックサイズ (行数)",
+  "ai_mode_scene_desc": "💡 対話を台本の流れとして送信します。キャラクターの口調、敬語、文脈の維持に最適です（ビジュアルノベル推奨）。",
+  "ai_mode_json_desc": "💡 テキストをキーと値のペアで送信します。行のズレを防ぎ厳密な整合性を保証し、UIやメニューに最適です。",
+  "ai_mode_xml_desc": "💡 テキストをXMLタグで囲みます。JSON出力が苦手な小型または旧型モデルに最も安全な選択肢です。"
 }

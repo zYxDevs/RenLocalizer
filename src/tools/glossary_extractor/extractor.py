@@ -7,10 +7,13 @@ Glossary Extractor Tool
 Extracts potential glossary terms (character names, common nouns) from Ren'Py scripts.
 """
 
+import logging
 import os
 import re
 from collections import Counter
 from typing import Dict, List, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 class GlossaryExtractor:
     """Analyzes Ren'Py files to find potential glossary terms."""
@@ -45,18 +48,29 @@ class GlossaryExtractor:
         
         # 2. Build result dictionary
         results = {}
+        from src.core.glossary_manager import COMMON_ENGLISH_STOPWORDS
         
         # Add characters (High priority)
         for var_name, display_name in character_map.items():
-            if display_name not in results:
-                results[display_name] = ""  # Empty translation by default
+            clean_name = (display_name or "").strip()
+            if (
+                clean_name
+                and len(clean_name) >= 3
+                and clean_name.lower() not in COMMON_ENGLISH_STOPWORDS
+                and clean_name not in results
+            ):
+                results[clean_name] = ""  # Empty translation by default
         
         # Add common terms
         for term, count in term_counter.most_common(50):
-            if count >= min_occurrence and term not in results:
-                # Filter out likely common words (very basic filter)
-                if len(term) > 3: 
-                    results[term] = ""
+            clean_term = (term or "").strip()
+            if (
+                count >= min_occurrence
+                and len(clean_term) >= 3
+                and clean_term.lower() not in COMMON_ENGLISH_STOPWORDS
+                and clean_term not in results
+            ):
+                results[clean_term] = ""
                     
         return results
 
@@ -64,25 +78,30 @@ class GlossaryExtractor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
+        except UnicodeDecodeError:
+            try:
+                with open(file_path, 'r', encoding='latin-1') as f:
+                    content = f.read()
+            except Exception as e:
+                logger.warning("Error reading %s with fallback encoding: %s", file_path, e)
+                return
+        except Exception as e:
+            logger.warning("Error reading %s: %s", file_path, e)
+            return
+
+        try:
             # Find definitions
             for match in self.char_def_pattern.finditer(content):
                 var_name = match.group(1)
                 display_name = match.group(2)
                 char_map[var_name] = display_name
-                
-            # Find potential proper nouns in dialogue
-            # This is tricky; for now we rely on explicit character defs mostly.
-            # But let's look for repeated capitalized words in strings
-            
+
             # Simple string extraction
             strings = re.findall(r'"([^"]+)"', content)
             for s in strings:
-                # Find capitalized words inside strings
                 matches = self.proper_noun_pattern.findall(s)
                 for m in matches:
                     term_counter[m] += 1
-                    
         except Exception as e:
-            print(f"Error scanning {file_path}: {e}")
+            logger.warning("Error scanning %s: %s", file_path, e)
 

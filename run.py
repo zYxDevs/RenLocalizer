@@ -313,19 +313,17 @@ def main() -> int:
 
         engine = QQmlApplicationEngine(app)
 
-        # Kapatma sırası: engine önce yok edilmeli
+        # Kapatma sırası: worker durdurulmalı, ayarlar kaydedilmeli, engine yok edilmeli
         _teardown_scheduled = [False]
 
         def _schedule_teardown() -> None:
             if not _teardown_scheduled[0]:
                 _teardown_scheduled[0] = True
+                backend.shutdown()
                 engine.deleteLater()
 
         app.lastWindowClosed.connect(_schedule_teardown)
         app.aboutToQuit.connect(_schedule_teardown)
-        # Persist in-memory settings (model name, URL, concurrency, profile...)
-        # on quit; connected before teardown so it runs while backend is alive.
-        app.aboutToQuit.connect(backend.persistSettingsOnExit)
 
         # Context property
         engine.rootContext().setContextProperty("appBackend", backend)

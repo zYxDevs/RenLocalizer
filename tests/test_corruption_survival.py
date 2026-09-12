@@ -1,98 +1,137 @@
-import os
+# -*- coding: utf-8 -*-
+"""
+Tests for Syntax Guard corruption survival and token recovery engine.
+Verifies that corrupted tokens (mutated hex, altered brackets, OCR-like typos,
+transliterations, and space injections) introduced during machine translation
+are faithfully recovered by restore_renpy_syntax.
+"""
 from pathlib import Path
-import re
 import random
-import traceback
+import re
 from src.core.parser import RenPyParser
-from src.core.syntax_guard import protect_renpy_syntax, restore_renpy_syntax, validate_translation_integrity
+from src.core.syntax_guard import (
+    protect_renpy_syntax,
+    restore_renpy_syntax,
+    validate_translation_integrity,
+)
 
-RPY_DIR = Path("RPYler")
+# Robust synthetic Ren'Py strings covering tags, variables, escapes, formatting
+SYNTHETIC_CORPUS = [
+    "{b}Welcome, [player_name]!{/b}",
+    "Your score is {color=#00ff00}[score]{/color} out of 100.",
+    "{i}Thinking: [thoughts]{/i}",
+    "Hello [player.name], you found [item_count] gold!",
+    "{size=+4}Chapter [chap_num]: The Beginning{/size}",
+    "{cps=25}Text appears slowly...{/cps}{w=1.0}{fast} and then resumes.",
+    "Health: [hp]/[max_hp] ({color=#f00}[hp_pct]% remaining{/color})",
+    "{font=gui/font.ttf}Custom font text with [hero_name] here.{/font}",
+    "Item received: [[Ancient Relic]] - Value: [item.val]G",
+    "{alpha=0.5}Ghostly presence: [ghost_name]{/alpha}",
+    "Progress: %d%% complete for user %(user)s",
+    "{b}{i}Nested bold italic with [param]{/i}{/b}",
+    "{#disambig_id}Start New Adventure with [companion]",
+]
 
-def test_syntax_guard():
-    parser = RenPyParser()
+
+def test_syntax_guard_corruption_recovery():
+    """Verify that syntax guard successfully recovers from realistic translation corruptions."""
+    # Collect corpus from synthetic cases + any repository .rpy samples
+    test_strings = list(SYNTHETIC_CORPUS)
+
+    repo_rpy = list(Path("examples").glob("*.rpy")) if Path("examples").exists() else []
+    if repo_rpy:
+        parser = RenPyParser()
+        for rpy in repo_rpy:
+            entries = parser.extract_text_entries(str(rpy))
+            for entry in entries:
+                txt = entry.get("text", "")
+                if txt and ("{" in txt or "[" in txt) and txt not in test_strings:
+                    test_strings.append(txt)
+
+    assert len(test_strings) >= len(SYNTHETIC_CORPUS)
+
     total_strings = 0
     corrupted_count = 0
     recovered_count = 0
     failed_count = 0
-    
-    # Let's find some rpy files across different games to test on
-    rpy_files = list(RPY_DIR.rglob("*.rpy"))
-    random.seed(42)
-    random.shuffle(rpy_files)
-    test_files = rpy_files[:50] # Test on a subset of 50 files for speed
-    
-    for file_path in test_files:
-        try:
-            entries = parser.extract_text_entries(file_path)
-            for entry_data in entries:
-                # Based on parser output, entry is a dict with 'text'
-                text = entry_data.get('text', '')
-                if not text.strip() or ('{' not in text and '[' not in text):
-                    continue
-                    
-                total_strings += 1
-                
-                # Protect syntax
-                protected_text, placeholders = protect_renpy_syntax(text)
-                if not placeholders:
-                    continue
-                    
-                # Introduce deliberate corruption!
-                # 1. Fuzzy suffix corruption: Change RLPH to RLLPH or alter hex slightly
-                corrupted_text = protected_text
-                for key in placeholders.keys():
-                    if key.startswith('__WRAPPER_PAIR'):
-                        # Mismatched parsing might happen if wrappers are mangled, but the fuzzy token recovery is about RLPH
-                        continue
-                    
-                    if "RLPH" in key:
-                        # Introduce a mutation 50% of the time per token
-                        if random.random() > 0.5:
-                            inner = key.strip('\u27e6\u27e7')
-                            parts = inner.split('_')
-                            hex_part = parts[0]
-                            suff_part = parts[1]
-                            if random.random() > 0.5:
-                                new_hex = hex_part.replace('RLPH', 'RLLPH', 1)
-                            else:
-                                new_hex = hex_part.replace('0', 'O', 1).replace('1', 'I', 1)
-                                
-                            new_inner = f"{new_hex}_{suff_part}"
-                            corrupted_key = f"\u27e6{new_inner}\u27e7"
-                            corrupted_text = corrupted_text.replace(key, corrupted_key)
-                            corrupted_count += 1
-                
-                # Restore syntax
-                try:
-                    restored_text = restore_renpy_syntax(corrupted_text, placeholders)
-                    missing_vars = validate_translation_integrity(restored_text, placeholders)
-                    
-                    if not missing_vars:
-                        recovered_count += 1
-                    else:
-                        print(f"[FAIL] Original: {text}")
-                        print(f"       Protected: {protected_text}")
-                        print(f"       Corrupted: {corrupted_text}")
-                        print(f"       Restored : {restored_text}")
-                        print(f"       Missing  : {missing_vars}")
-                        failed_count += 1
-                except Exception as e:
-                    print(f"EXCEPTION ON {text}: {e}")
-                    failed_count += 1
-        except Exception as e:
-            traceback.print_exc()
 
-    print("\n" + "="*50)
-    print("      SYNTAX GUARD CORRUPTION SURVIVAL TEST")
-    print("="*50)
-    print(f"Files tested      : {len(test_files)}")
-    print(f"Strings w/ syntax : {total_strings}")
-    print(f"Tokens corrupted  : {corrupted_count}")
-    print(f"Tokens recovered  : {recovered_count}")
-    print(f"Tokens failed     : {failed_count}")
-    
-    if failed_count == 0 and corrupted_count > 0:
-        print("\n\nSUCCESS! 100% of the corrupted tokens were fully recovered by the new engine!")
-    
-if __name__ == "__main__":
-    test_syntax_guard()
+    random.seed(42)
+
+    for text in test_strings:
+        protected_text, placeholders = protect_renpy_syntax(text)
+        if not placeholders:
+            continue
+
+        total_strings += 1
+
+        # Test 1: Uncorrupted round-trip baseline
+        restored_clean = restore_renpy_syntax(protected_text, placeholders)
+        missing_clean = validate_translation_integrity(restored_clean, placeholders)
+        assert not missing_clean, f"Clean round-trip failed for: {text!r} -> {restored_clean!r}"
+
+        # Test 2: Deliberate token corruptions
+        corrupted_text = protected_text
+        has_corruptions = False
+
+        for key in list(placeholders.keys()):
+            if key.startswith("__WRAPPER_PAIR") or key.startswith("__TAG_"):
+                continue
+
+            if "RLPH" in key:
+                inner = key.strip("\u27e6\u27e7")
+                parts = inner.split("_")
+                if len(parts) >= 2:
+                    hex_part = parts[0]
+                    suff_part = parts[1]
+
+                    # Select a corruption strategy deterministically/pseudorandomly
+                    strategy = random.choice(["typo_rlph", "hex_ocr", "spaces", "brackets"])
+
+                    if strategy == "typo_rlph":
+                        # Typo in prefix: RLPH -> RLLPH
+                        new_hex = hex_part.replace("RLPH", "RLLPH", 1)
+                        new_token = f"\u27e6{new_hex}_{suff_part}\u27e7"
+                    elif strategy == "hex_ocr":
+                        # OCR error: 0 -> O, 1 -> I
+                        new_hex = hex_part.replace("0", "O").replace("1", "I")
+                        new_token = f"\u27e6{new_hex}_{suff_part}\u27e7"
+                    elif strategy == "spaces":
+                        # Space insertion inside token: ⟦ RLPH... ⟧
+                        new_token = f"\u27e6 {inner} \u27e7"
+                    elif strategy == "brackets":
+                        # Bracket stripped or converted to square bracket: [RLPH...]
+                        new_token = f"[{inner}]"
+                    else:
+                        new_token = key
+
+                    if new_token != key and key in corrupted_text:
+                        corrupted_text = corrupted_text.replace(key, new_token, 1)
+                        corrupted_count += 1
+                        has_corruptions = True
+
+        if has_corruptions:
+            try:
+                restored_corrupted = restore_renpy_syntax(corrupted_text, placeholders)
+                missing_vars = validate_translation_integrity(restored_corrupted, placeholders)
+                if not missing_vars:
+                    recovered_count += 1
+                else:
+                    failed_count += 1
+            except Exception:
+                failed_count += 1
+
+    # Assertions guaranteeing test effectiveness
+    assert total_strings > 0, "No syntax-containing strings were processed"
+    assert corrupted_count > 0, "No corruptions were applied to test recovery"
+    assert failed_count == 0, f"Recovery failed for {failed_count} strings (recovered: {recovered_count})"
+    assert recovered_count > 0, "No corrupted tokens were recovered"
+
+
+def test_syntax_guard_transliteration_recovery():
+    """Verify recovery when legacy format tokens are transliterated or spaced."""
+    # Test spaced legacy token
+    placeholders = {"VAR0": "[player_name]", "TAG1": "{b}"}
+    spaced_input = "Hello VAR 0 and TAG 1 Welcome"
+    restored = restore_renpy_syntax(spaced_input, placeholders)
+    assert "[player_name]" in restored
+    assert "{b}" in restored

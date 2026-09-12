@@ -64,3 +64,70 @@ def test_translate_batch_projects_source_lang_fallback_cache_hits() -> None:
     assert result.metadata["cache_hit_type"] == "source_lang_fallback"
     assert result.metadata["cache_source_lang"] == "en"
     assert ("deepl", "auto", "tr", "Save") in manager._cache
+
+
+def test_translate_batch_routes_to_google_translator_without_name_error() -> None:
+    from unittest.mock import AsyncMock
+    from src.core.translator import GoogleTranslator
+
+    manager = TranslationManager()
+    gt = GoogleTranslator()
+    mock_batch = AsyncMock(
+        return_value=[
+            TranslationResult(
+                original_text="Hello",
+                translated_text="Merhaba",
+                source_lang="en",
+                target_lang="tr",
+                engine=TranslationEngine.GOOGLE,
+                success=True,
+            ),
+            TranslationResult(
+                original_text="World",
+                translated_text="Dunya",
+                source_lang="en",
+                target_lang="tr",
+                engine=TranslationEngine.GOOGLE,
+                success=True,
+            ),
+        ]
+    )
+    gt.translate_batch = mock_batch
+    manager.add_translator(TranslationEngine.GOOGLE, gt)
+
+    reqs = [
+        TranslationRequest("Hello", "en", "tr", TranslationEngine.GOOGLE),
+        TranslationRequest("World", "en", "tr", TranslationEngine.GOOGLE),
+    ]
+
+    results = asyncio.run(manager.translate_batch(reqs))
+    assert len(results) == 2
+    assert results[0].translated_text == "Merhaba"
+    assert results[1].translated_text == "Dunya"
+    assert mock_batch.called
+
+
+def test_translate_batch_routes_to_deepl_and_libre_without_name_error() -> None:
+    from unittest.mock import AsyncMock
+    from src.core.translator import DeepLTranslator, LibreTranslateTranslator
+
+    manager = TranslationManager()
+    dt = DeepLTranslator(api_key="mock_key")
+    dt.translate_batch = AsyncMock(
+        return_value=[
+            TranslationResult(
+                original_text="Hi",
+                translated_text="Selam",
+                source_lang="en",
+                target_lang="tr",
+                engine=TranslationEngine.DEEPL,
+                success=True,
+            )
+        ]
+    )
+    manager.add_translator(TranslationEngine.DEEPL, dt)
+    results = asyncio.run(
+        manager.translate_batch([TranslationRequest("Hi", "en", "tr", TranslationEngine.DEEPL)])
+    )
+    assert len(results) == 1
+    assert results[0].translated_text == "Selam"

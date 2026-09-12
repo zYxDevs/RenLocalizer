@@ -4,6 +4,73 @@ render_with_liquid: false
 
 # RenLocalizer Changelog
 
+#### [2.8.15] - 2026-09-08
+
+> **Architectural Modularization, Context-Aware Scene Mode, RPA Security Hardening, RTL Text Direction & Toolbox Hardening**
+
+> **🛡️ Security & Integrity Hardening (`rpa_parser.py`, `saving.py`, `syntax_guard.py`):**
+> - **RPA Arbitrary Code Execution (RCE) Elimination:** Completely removed unsafe fallback `pickle.loads()` in RPA index deserialization, strictly enforcing allowlist inspection (`_RestrictedRPAUnpickler`) to reject malicious payloads with security violations.
+> - **RPA Zip Slip / Path Traversal Mitigation:** Added strict boundary validation (`out_path.is_relative_to(output_dir_resolved)`) during RPA extraction (`extract_all`), preventing malicious archives from escaping output directories via directory traversal (`../../`). Covered by `test_rpa_path_traversal_blocked`.
+> - **`strings.json` Generation Integrity:** Fixed missing `return` statement in `_try_add` dictionary builder during case-insensitive key conflict handling, preventing skipped translation entries from leaking into output files.
+> - **Syntax Guard Corruption Survival:** Hardened token restoration against translation engine corruptions (prefix typos `RLLPH`, OCR errors `O/I`, transliterations, space insertions) with 100% integrity validation across synthetic and live Ren'Py corpora.
+> - **Translator Binding & Dynamic Language Fix:** Corrected `GoogleTranslator.__init__` argument forwarding to ensure `BaseTranslator.config_manager` is properly populated, and eliminated hardcoded language codes (`"en" -> "tr"`) in empty glossary translations in favor of active settings.
+> - **Toolbox Packaging & Encoding Resilience:** Bundled `fontTools` in `RenLocalizer.spec` hidden imports to guarantee standalone Font Helper operation, and added Latin-1 fallback parsing to `GlossaryExtractor` for legacy `.rpy` scripts.
+
+> **🎭 Context-Aware Scene & Screenplay Translation Mode (`ai_translator.py`, `orchestrator.py`):**
+> - **Screenplay Dialogue Mode (`_build_scene_batch`):** Introduced a specialized format for Visual Novels that formats lines as natural scene scripts (`### SCENE START ###\n[0] Speaker: Dialogue\n### SCENE END ###`), enabling LLMs to maintain character voice, emotional tone, and Turkish formality ("sen/siz").
+> - **Speaker Attribution Parity:** Attached character attribution (`'character': getattr(entry, 'character', None)`) directly into `TranslationRequest` metadata across all pipeline request factories.
+> - **Robust Regex Stream Parser (`_parse_scene_batch`):** Tolerant parser handles format variations (`[0] text`, `0. text`, `0: text`, `(0) text`), strips echoed speaker prefixes automatically, and handles markdown fences cleanly.
+> - **Multi-Tier Fallback Recovery:** Seamlessly cascades Scene -> JSON -> XML -> Single translation recovery if line count or structure is corrupted.
+> - **Configuration & UI Controls:** Added `ai_batch_format` (`"scene"` | `"json"` | `"xml"`), `ai_scene_batch_size` (default 15, range 5-30), and localized controls in `Main.qml`.
+
+> **🧩 Subsystem Modularization & Single Responsibility Principle (SRP):**
+> - **Translator Subsystem Decomposition (`src/core/translators/`, `translator.py`):** Decomposed monolithic 4,451-line `translator.py` into focused, single-responsibility modules (`base.py`, `router.py`, `google.py`, `services.py`, `manager.py`). Preserved 100% backward compatibility via facade re-exports in `translator.py`.
+> - **QML Component Modularization (`src/gui/qml/components/`, `Main.qml`):** Extracted top-level dialogs from `Main.qml` into reusable components (`ToastNotification.qml`, `WarningDialog.qml`, `GlossaryAddDialog.qml`) with `qmldir` registration and headless automated integration tests (`tests/test_qml_integrity.py`).
+> - **Pipeline Generation Refactor (`saving.py`):** Extracted the 250-line `_generate_strings_json` god method into `saving.py`, decomposed into 8 focused sub-functions each under 50 lines.
+
+> **⚡ Concurrency, Thread Affinity & Asyncio Lifecycle Management:**
+> - **Qt Thread Affinity (`pipeline/base.py`, `app_backend.py`):** Migrated `TranslationPipeline` QObject ownership to worker threads (`moveToThread(self)`) during initialization, eliminating cross-thread Qt affinity warnings.
+> - **Zero-Dangling Shutdown Protocol:** Added `close()` to `EndpointRouter` (`_probe_task.cancel()`) and implemented `backend.shutdown(timeout_ms=3000)` tied to `QApplication.aboutToQuit` and `lastWindowClosed` to terminate `PipelineWorker` threads safely, eliminating `QThread: Destroyed while thread is still running` crash on window close.
+> - **Worker Thread Event Loop Bridge:** Implemented dedicated `asyncio` event loop runner per worker thread (`_run_translate_batch_sync`), properly closing stale `aiohttp` sessions and eliminating `Event loop is closed` / `RuntimeError: cannot reuse closed session` errors.
+> - **Unified TL Re-Translation:** Dismantled isolated 210-line `_run_tl_retranslation` in `AppBackend`, routing TL mode through `TranslationPipeline.run()` with `is_tl_mode=True`.
+
+> **🚀 Memory Optimization & Algorithmic Performance (`saving.py`, `orchestrator.py`):**
+> - Eliminated duplicate in-memory lists from 6 variant synthesizers (`mapping.items()` generator iteration), significantly reducing heap pressure on 50,000+ line visual novel projects.
+> - Optimized case-insensitive conflict resolution from $O(N)$ linear scans to $O(1)$ set lookups (`lower_to_translations`).
+> - Gated `mapping_sources` allocation to only the first 200 diagnostic sample candidates, preventing tens of thousands of unused Python dictionaries from lingering in RAM.
+> - Pre-filtered candidate sources in `synthesize_runtime_observed_variants`, reducing repeated string scans from $O(K \times N)$ to $O(N + K \times M)$.
+> - Consolidated recurring function-local regex compilations into module-level pre-compiled constants (`pipeline/constants.py`).
+
+> **✨ Modern Motion & Micro-Interactions UI Overhaul (`Main.qml`):**
+> - **Main Action Button (`startButton`):** Tactile scale feedback (`scale: 1.02` hover, `scale: 0.97` press, 160ms OutCubic), multi-layer neon glowing border, continuous pulsating heartbeat animation while active, pure-white vector STOP icon, and smoothed stop gradient (`#EF4444 -> #DC2626`).
+> - **Smooth Shimmer Progress Bar (`progressBar`):** Width transitions softened with `Behavior on width` (250ms OutCubic) paired with a 72px Gaussian bell-curve continuous scanning beam.
+> - **Staggered Entrances & Spring Badges:** 45ms staggered entrance slide-in delays on panels and cards, celebratory spring-bouncing success tick badge (`overshoot: 1.8`), and tactile input focus rings.
+> - **Live Stage Sonar Pulse & Anti-Jitter Typography:** Animated radar sonar beacon beside active stage text, regex-based trailing dots deduplication (`cleanStageText`), and fixed-width typography container eliminating layout shifting.
+> - **100% Declarative & Reactive Multi-Language Stage Engine:** Pure property bindings to `appBackend.uiTrigger` and `getTextWithDefault()`, enabling instantaneous live language switching across all 9 supported locales without signal desynchronization.
+> - **Glassmorphism Modal System:** Replaced legacy Material headers with border-glow glassmorphism cards, circular badge icons, monospace output capsules, and fixed QML hierarchy `TypeError` on gradient hover evaluations.
+
+> **🌐 Right-to-Left (RTL) Layout & Script Rendering Fix (`runtime_hook_template.py`, `saving.py`, `constants.py`):**
+> - **Late-Binding RTL Direction Enforcement:** Added late-binding `_rl_apply_runtime_language_direction` in `init 999 python:` block within the runtime hook template. Prevents Ren'Py's `gui.init()` (which runs at `init -2`) from resetting `reading_order = 'wrtl'` on text styles.
+> - **ISO-639-1 Language Code Support:** Expanded `_rl_rtl_languages` and `RTL_LANGUAGES` with standard ISO codes (`'ar'`, `'fa'`, `'he'`, `'ur'`, `'ps'`, `'sd'`), ensuring games configured with short language codes activate RTL layout correctly.
+> - **Safe Language Activation RTL Block:** `create_language_init_file` now conditionally injects `define config.rtl = True` and WRTL reading order hints into `zzz_{lang}_language.rpy` exclusively for RTL languages, leaving LTR languages (Turkish, English, Russian, Japanese, German, etc.) 100% unaffected.
+> - **Native Hook RTL Support:** Added conditional RTL styling and `config.rtl = True` to `render_runtime_hook_native()`.
+> - **Pipeline Advisory Notice:** Emits a clear advisory in `_run_pipeline()` and `translate_existing_tl()` when target language is RTL, instructing users to install an OpenType font via Toolbox -> Font Injector if unshaped glyphs occur.
+
+> **🔧 Toolbox Tools Hardening & Repair (`font_injector.py`, `font_helper.py`, `app_backend.py`, `Main.qml`):**
+> - **Font Injector Full-Script Unicode Downloads:** Replaced hardcoded Latin-only subset parameters in `_download_font()` with dynamic font metadata querying (`https://gwfh.mranftl.com/api/fonts/{font_id}`). Ensures all native character sets (Arabic, Hebrew, Japanese, Korean, Thai, Cyrillic) are preserved rather than stripped to 0 glyphs.
+> - **Standalone Syntax & Indentation Linter:** Re-routed `runToolRenpyLint()` to RenLocalizer's built-in 700-line AST/syntax validator (`lint_translation_output`). Users can now scan translated dialogue, indentation, and tags immediately without requiring an external Ren'Py SDK installation.
+> - **Actionable Font Helper Diagnostics:** Enhanced `_run_font_helper_thread()` to parse and report scanned font counts, compatibility percentages, and language-specific fallback recommendations instead of discarding check summaries.
+> - **Persian Font Recommendations & Language Normalization:** Updated `suggest_fonts()` in `font_helper.py` to recognize language names (`persian`, `arabic`, `turkish`) and provide native OpenType fonts (`Vazirmatn`, `Sahel`, `Noto Sans Arabic`) for Persian (`fa`).
+> - **UI Button Clarity & Locales:** Clarified button labels in `Main.qml` and `locales/` between checking compatibility (`btn_run_font`) and executing font injection (`btn_font_inject`).
+
+> **🧪 Test Suite Hardening & Integrity:**
+> - All **1,185 tests passing** (1,185 Passed, 2 Skipped, 0 Failed) across 61 test modules.
+> - Added dedicated Toolbox regression suite (`tests/test_toolbox_tools.py`) covering font suggestions, normalization, built-in linter fallback, and glossary extraction.
+> - Added dedicated RTL isolation and ISO code regression suites (`test_runtime_hook_rtl_for_iso_codes`, `test_runtime_hook_rtl_late_binding`, `test_runtime_hook_native_rtl`, `test_is_rtl_language_helper`, `test_create_language_init_file_rtl_isolation`).
+> - Eliminated false confidence: re-engineered `test_corruption_survival.py` with autonomous synthetic corpora and strict assertions; fixed `test_v283_enhanced_coverage.py` to enforce deterministic translation ID generation and collision avoidance; removed all silent `try-except: pass` handlers in test suites.
+> - Hardened concurrency and rate-limiting tests (`test_google_rate_limit.py`, `test_pipeline_worker.py`, `test_qml_integrity.py`).
+
+
 #### [2.8.14] - 2026-09-03
 
 > **Smart Endpoint Router — Eliminating 30s Translation Spikes & True batchexecute Batch**

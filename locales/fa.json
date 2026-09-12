@@ -1294,5 +1294,13 @@
   "cache_cleared_toast": "Translation cache cleared.",
   "engine_local_llm": "🖥️ Local LLM (Ollama / LM Studio)",
   "source_lang_auto": "🤖 Auto-detect",
-  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags..."
+  "ai_prompt_placeholder": "Translate the following Ren'Py visual novel dialogue accurately while keeping tags...",
+  "ai_mode_label": "حالت ترجمه",
+  "ai_mode_scene": "حالت صحنه / فیلم‌نامه (با درک زمینه)",
+  "ai_mode_json": "حالت استاندارد ساختاریافته (JSON)",
+  "ai_mode_xml": "حالت گروه‌بندی سنتی (XML)",
+  "ai_scene_size_label": "اندازه بلوک صحنه (سطر)",
+  "ai_mode_scene_desc": "💡 گفتگوها را در قالب جریان فیلم‌نامه ارسال می‌کند. بهترین گزینه برای حفظ زمینه، جنسیت و لحن شخصیت‌ها (پیشنهادی برای رمان‌های تصویری).",
+  "ai_mode_json_desc": "💡 متن‌ها را به صورت جفت‌های کلید-مقدار ارسال می‌کند. تضمین دقت ساختار بدون جابجایی سطرها؛ ایده‌آل برای منوها و متون سیستمی.",
+  "ai_mode_xml_desc": "💡 متن‌ها را در برچسب‌های XML قرار می‌دهد. پایدارترین روش برای مدل‌های کوچک‌تر یا قدیمی که با خروجی JSON مشکل دارند."
 }

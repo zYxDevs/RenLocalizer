@@ -73,7 +73,7 @@ def run_extraction(project_path: str, config, log_emit, log_error) -> bool:
         return False
 
 
-def cleanup_legacy_mod_files(game_dir: str, log_emit) -> int:
+def cleanup_legacy_mod_files(game_dir: str, log_emit, config=None) -> int:
     """UnRen'in eklediği mod dosyalarını temizle."""
     cleanup_patterns = [
         "unren-console.rpy", "unren-console.rpyc",

@@ -3764,7 +3764,7 @@ class RenPyParser:
                 
             except SyntaxError:
                 # Invalid Python, skip this block
-                self.logger.debug("Syntax error in Python block, skipping: %s", line[:80])
+                self.logger.debug("Syntax error in Python block, skipping: %s", block_code[:80])
             except Exception as exc:
                 self.logger.debug(f"AST parse error in block: {exc}")
         
@@ -4620,27 +4620,3 @@ class RenPyParser:
 
         return True
 
-
-
-        # Extraction döngüsü içinde olmalı:
-        while index < len(lines):
-            raw_line = lines[index]
-            stripped_line = raw_line.strip()
-
-            # Edge-case: Teknik satırları, sadece teknik terimleri, dosya yollarını, renk kodlarını, değişken/tag satırlarını, boş veya yorum satırlarını atla
-            if (
-                self.technical_line_re.match(stripped_line)
-                or self.numeric_or_path_re.match(stripped_line)
-                or self.renpy_var_or_tag_re.match(stripped_line)
-                or self.comment_or_empty_re.match(stripped_line)
-            ):
-                index += 1
-                continue
-
-            # Menü/choice satırlarında teknik koşulları atla
-            if self.menu_technical_condition_re.match(stripped_line):
-                index += 1
-                continue
-
-            # ...mevcut extraction işlemleri...
-            index += 1

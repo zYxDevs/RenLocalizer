@@ -81,10 +81,16 @@ def test_probe_task_singleton():
         r._schedule_probe(); t1 = r._probe_task
         r._schedule_probe(); t2 = r._probe_task
         assert t1 is t2
-        if t1: t1.cancel()
-        try: await t1
-        except asyncio.CancelledError: pass
+        r.close()
+        assert r._probe_task is None
     asyncio.run(run())
+
+
+def test_router_close_idempotent():
+    r = EndpointRouter()
+    # Calling close when no probe task exists should not raise
+    r.close()
+    assert r._probe_task is None
 
 if __name__ == "__main__":
     import subprocess, sys

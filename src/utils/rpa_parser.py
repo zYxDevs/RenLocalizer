@@ -75,21 +75,14 @@ class _RestrictedRPAUnpickler(pickle.Unpickler):
 
 
 def _safe_loads_rpa_index(data: bytes):
-    """Deserialize an RPA index safely.
+    """Deserialize an RPA index safely using restricted unpickling.
 
-    Tries the restricted unpickler first (blocks code execution). If the
-    restricted path rejects a type that a legitimate archive needs, falls back
-    to standard pickle.loads with a warning so no working archive breaks.
+    Only allowlisted container and primitive types are resolved.
+    Any attempt to resolve disallowed globals (e.g. executable callables)
+    strictly raises pickle.UnpicklingError without insecure fallback.
     """
     import io
-    try:
-        return _RestrictedRPAUnpickler(io.BytesIO(data)).load()
-    except pickle.UnpicklingError as e:
-        logger.warning(
-            "Restricted RPA index unpickle rejected a type (%s); "
-            "falling back to standard unpickle for compatibility.", e
-        )
-        return pickle.loads(data)
+    return _RestrictedRPAUnpickler(io.BytesIO(data)).load()
 
 
 class RPAParser:
@@ -225,8 +218,15 @@ class RPAParser:
                 if isinstance(prefix, str):
                     prefix = prefix.encode('latin-1')
                 
-                # Create output path
-                out_path = output_dir / filename
+                # Prevent path traversal (Zip Slip vulnerability)
+                clean_filename = Path(filename.replace('\\', '/')).as_posix().lstrip('/')
+                out_path = (output_dir / clean_filename).resolve()
+                output_dir_resolved = output_dir.resolve()
+                if not out_path.is_relative_to(output_dir_resolved):
+                    self.logger.warning(f"Skipping dangerous path traversal file in RPA: {filename}")
+                    errors += 1
+                    continue
+
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 
                 # Read and write file
