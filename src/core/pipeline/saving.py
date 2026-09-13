@@ -601,7 +601,6 @@ def _extract_raw_mapping(
     }
     skipped_samples: List[Dict[str, Any]] = []
     mapping_sources: Dict[str, List[dict]] = {}
-    lower_to_translations: Dict[str, Set[str]] = {}
     active_logger = logger_obj or logger
 
     def _mark_skipped(reason: str, original: str, translated: str) -> None:
@@ -631,15 +630,6 @@ def _extract_raw_mapping(
                 _mark_skipped('duplicate_key_conflict', orig, trans)
                 active_logger.debug("strings.json: Duplicate key conflict: %s", orig[:40])
             return
-        lower_orig = orig.lower()
-        if lower_orig in lower_to_translations:
-            if any(prev_t != trans for prev_t in lower_to_translations[lower_orig]):
-                _mark_skipped('case_insensitive_conflict', orig, trans)
-                active_logger.debug("strings.json: Case-insensitive conflict: %s", orig[:40])
-                return
-            lower_to_translations[lower_orig].add(trans)
-        else:
-            lower_to_translations[lower_orig] = {trans}
         mapping[orig] = trans
         if source_file and len(skipped_samples) < 200:
             mapping_sources.setdefault(orig, []).append({'file': source_file, 'line': line_num})

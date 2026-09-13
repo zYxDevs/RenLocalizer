@@ -186,8 +186,8 @@ class TestPipelineE2E:
         assert result.success, f"TL mode retranslation should succeed: {result.message}"
         assert result.stage == PipelineStage.COMPLETED
 
-    def test_extract_raw_mapping_case_insensitive_conflict_skipped(self):
-        """Ensure case-insensitive conflicts are skipped from mapping."""
+    def test_extract_raw_mapping_both_cases_preserved(self):
+        """Ensure case variants ('Hello' and 'hello') are both preserved in mapping."""
         from types import SimpleNamespace
         from src.core.pipeline.saving import _extract_raw_mapping
 
@@ -198,6 +198,21 @@ class TestPipelineE2E:
         mapping, skipped_corrupt, skipped_counts, _ = _extract_raw_mapping([tfile])
         assert "Hello" in mapping
         assert mapping["Hello"] == "Merhaba"
-        assert "hello" not in mapping
+        assert "hello" in mapping
+        assert mapping["hello"] == "Selam"
+        assert skipped_corrupt == 0
+
+    def test_extract_raw_mapping_duplicate_key_conflict(self):
+        """Ensure exact duplicate keys with differing translations preserve the first."""
+        from types import SimpleNamespace
+        from src.core.pipeline.saving import _extract_raw_mapping
+
+        entry1 = SimpleNamespace(original_text="Save", translated_text="Kaydet")
+        entry2 = SimpleNamespace(original_text="Save", translated_text="Sakla")
+        tfile = SimpleNamespace(file_path="script.rpy", entries=[entry1, entry2])
+
+        mapping, skipped_corrupt, skipped_counts, _ = _extract_raw_mapping([tfile])
+        assert "Save" in mapping
+        assert mapping["Save"] == "Kaydet"
         assert skipped_corrupt == 1
-        assert skipped_counts["case_insensitive_conflict"] == 1
+        assert skipped_counts["duplicate_key_conflict"] == 1

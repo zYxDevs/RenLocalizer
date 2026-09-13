@@ -4,6 +4,18 @@ render_with_liquid: false
 
 # RenLocalizer Changelog
 
+#### [2.8.16] - 2026-09-13
+
+> **Runtime Dictionary Parity, False-Positive Conflict Elimination & Comprehensive Multi-Language Font Normalization**
+
+> **🛡️ Dictionary & Pipeline Integrity (`saving.py`, `app_backend.py`, `google.py`):**
+> - **Eliminated False-Positive Case-Insensitive Conflict Filter (`saving.py`):** Completely removed the erroneous `case_insensitive_conflict` skip in `_extract_raw_mapping` that blocked legitimate common words ("save", "heal", "load", "keyboard", "attack", etc.) whenever uppercase and lowercase variants coexisted. Both exact case variants are now fully preserved in `strings.json` with exact dictionary lookup parity.
+> - **Translator Binding & Dynamic Language Fix:** Corrected `GoogleTranslator.__init__` argument forwarding to ensure `BaseTranslator.config_manager` is properly populated, and eliminated hardcoded language codes (`"en" -> "tr"`) in empty glossary translations in favor of active settings.
+
+> **🔤 Toolbox & Multi-Language Font Normalization (`font_injector.py`, `font_helper.py`, `RenLocalizer.spec`):**
+> - **Font Mapping & Multi-Language Normalization (Issue #18):** Fully resolved font mapping failure for `chinese_s` and added comprehensive dialect normalization for Simplified/Traditional Chinese (`chinese_s`, `chinese_t`, `zh_hans`, `zh_hant`, `simplified_chinese`), Japanese (`ja`, `jp`, `nihongo`), Korean (`ko`, `kr`, `hangul`), RTL (`ur`, `ar`, `fa`, `he`), Cyrillic, Indic, and European languages across Font Injector and Font Helper.
+> - **Toolbox Packaging & Encoding Resilience:** Bundled `fontTools` in `RenLocalizer.spec` hidden imports to guarantee standalone Font Helper operation, and added Latin-1 fallback parsing to `GlossaryExtractor` for legacy `.rpy` scripts.
+
 #### [2.8.15] - 2026-09-08
 
 > **Architectural Modularization, Context-Aware Scene Mode, RPA Security Hardening, RTL Text Direction & Toolbox Hardening**
@@ -13,9 +25,6 @@ render_with_liquid: false
 > - **RPA Zip Slip / Path Traversal Mitigation:** Added strict boundary validation (`out_path.is_relative_to(output_dir_resolved)`) during RPA extraction (`extract_all`), preventing malicious archives from escaping output directories via directory traversal (`../../`). Covered by `test_rpa_path_traversal_blocked`.
 > - **`strings.json` Generation Integrity:** Fixed missing `return` statement in `_try_add` dictionary builder during case-insensitive key conflict handling, preventing skipped translation entries from leaking into output files.
 > - **Syntax Guard Corruption Survival:** Hardened token restoration against translation engine corruptions (prefix typos `RLLPH`, OCR errors `O/I`, transliterations, space insertions) with 100% integrity validation across synthetic and live Ren'Py corpora.
-> - **Translator Binding & Dynamic Language Fix:** Corrected `GoogleTranslator.__init__` argument forwarding to ensure `BaseTranslator.config_manager` is properly populated, and eliminated hardcoded language codes (`"en" -> "tr"`) in empty glossary translations in favor of active settings.
-> - **Toolbox Packaging & Encoding Resilience:** Bundled `fontTools` in `RenLocalizer.spec` hidden imports to guarantee standalone Font Helper operation, and added Latin-1 fallback parsing to `GlossaryExtractor` for legacy `.rpy` scripts.
-> - **Font Mapping & Multi-Language Normalization (Issue #18):** Fully resolved font mapping failure for `chinese_s` and added comprehensive dialect normalization for Simplified/Traditional Chinese (`chinese_s`, `chinese_t`, `zh_hans`, `zh_hant`, `simplified_chinese`), Japanese (`ja`, `jp`, `nihongo`), Korean (`ko`, `kr`, `hangul`), RTL (`ur`, `ar`, `fa`, `he`), Cyrillic, Indic, and European languages across Font Injector and Font Helper.
 
 > **🎭 Context-Aware Scene & Screenplay Translation Mode (`ai_translator.py`, `orchestrator.py`):**
 > - **Screenplay Dialogue Mode (`_build_scene_batch`):** Introduced a specialized format for Visual Novels that formats lines as natural scene scripts (`### SCENE START ###\n[0] Speaker: Dialogue\n### SCENE END ###`), enabling LLMs to maintain character voice, emotional tone, and Turkish formality ("sen/siz").
