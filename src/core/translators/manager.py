@@ -20,7 +20,15 @@ from .base import (
     TranslationResult,
 )
 from .google import GoogleTranslator
-from .services import DeepLTranslator, LibreTranslateTranslator
+from .services import DeepLTranslator, LibreTranslateTranslator, BingTranslator
+
+_PROTECTED_TEXT_MARKERS = ('<ph id=', '⟦', '__PH_')
+
+
+def _is_protected_cache_text(text: str) -> bool:
+    """True for keys written under placeholder-protected text (pre-2.8.17)."""
+    return any(marker in text for marker in _PROTECTED_TEXT_MARKERS)
+
 
 class TranslationManager:
     def __init__(self, proxy_manager=None, config_manager=None):
@@ -191,11 +199,24 @@ class TranslationManager:
         """Persist an alias when cache lookup used a fallback dimension."""
         return key[0] != cached.engine.value or key[1] != cached.source_lang
 
+    @staticmethod
+    def _cache_key_for(req: TranslationRequest) -> Tuple[str, str, str, str]:
+        """Cache key for *req*, always keyed by the original (unprotected) text.
+
+        Lookups normalise to metadata['original_text'], so stores must do the
+        same. Storing `result.original_text` instead meant AI engines — which
+        return the XML/token-protected text they were given — wrote keys that
+        no later lookup could ever match, so every line containing a
+        placeholder was re-translated on each run.
+        """
+        meta = req.metadata if isinstance(req.metadata, dict) else {}
+        text = meta.get("original_text", req.text)
+        return (req.engine.value, req.source_lang, req.target_lang, text)
+
     async def translate_with_retry(self, req: TranslationRequest) -> TranslationResult:
         # ── Normalize cache key to original (unprotected) text ──
-        meta = req.metadata if isinstance(req.metadata, dict) else {}
-        cache_text = meta.get("original_text", req.text)
-        key = (req.engine.value, req.source_lang, req.target_lang, cache_text)
+        key = self._cache_key_for(req)
+        cache_text = key[3]
         cached = await self._cache_get(key)
         if cached:
             self.cache_hits += 1
@@ -271,9 +292,7 @@ class TranslationManager:
         ] = {}  # (engine, src, tgt, text) -> [original_indices]
         for idx, req in indexed:
             # ── Normalize dedup key to original (unprotected) text ──
-            meta = req.metadata if isinstance(req.metadata, dict) else {}
-            cache_text = meta.get("original_text", req.text)
-            key = (req.engine.value, req.source_lang, req.target_lang, cache_text)
+            key = self._cache_key_for(req)
             unique_req_map.setdefault(key, []).append(idx)
 
         # Cache'den kontrol et
@@ -361,6 +380,7 @@ class TranslationManager:
                 or is_ai
                 or isinstance(tr, DeepLTranslator)
                 or isinstance(tr, LibreTranslateTranslator)
+                or isinstance(tr, BingTranslator)
             )
 
             translated_items: List[TranslationResult] = []
@@ -378,16 +398,10 @@ class TranslationManager:
 
             if translated_items:
                 # Toplu sonuçları yerleştir
-                for (idx, _), res in zip(items, translated_items):
+                for (idx, batch_req), res in zip(items, translated_items):
                     final_results[idx] = res
                     if res.success:
-                        key2 = (
-                            res.engine.value,
-                            res.source_lang,
-                            res.target_lang,
-                            res.original_text,
-                        )
-                        await self._cache_put(key2, res)
+                        await self._cache_put(self._cache_key_for(batch_req), res)
             else:
                 # Tekil çeviri akışı
                 concurrency = self.max_concurrent_requests
@@ -423,13 +437,7 @@ class TranslationManager:
                 for idx, res in results:
                     final_results[idx] = res
                     if res and res.success:
-                        key2 = (
-                            res.engine.value,
-                            res.source_lang,
-                            res.target_lang,
-                            res.original_text,
-                        )
-                        await self._cache_put(key2, res)
+                        await self._cache_put(self._cache_key_for(requests[idx]), res)
 
         # 3. Sonuçları kopya (deduplicated) satırlara dağıt
         for key, indices in unique_req_map.items():
@@ -638,6 +646,7 @@ class TranslationManager:
             count = 0
             # Init aşamasında concurrency olmadığı için lock gerekmez.
             # Doğrudan senkron olarak yükle.
+            skipped_protected = 0
             for engine_str, sl_map in data.items():
                 if not isinstance(sl_map, dict):
                     continue
@@ -648,6 +657,12 @@ class TranslationManager:
                         if not isinstance(text_map, dict):
                             continue
                         for text, translated in text_map.items():
+                            if _is_protected_cache_text(text):
+                                # Written by a pre-2.8.17 build under the
+                                # protected text; no lookup can ever match it,
+                                # so drop it instead of spending capacity.
+                                skipped_protected += 1
+                                continue
                             key = (engine_str, sl, tl, text)
                             # Basit validasyon
                             engine_enum = TranslationEngine.GOOGLE
@@ -669,6 +684,11 @@ class TranslationManager:
             while len(self._cache) > self.cache_capacity:
                 self._cache.popitem(last=False)
 
+            if skipped_protected:
+                self.logger.info(
+                    "Dropped %d unusable cache entries written under placeholder-protected text",
+                    skipped_protected,
+                )
             self.logger.info(f"Cache loaded: {file_path} ({count} entries)")
         except Exception as e:
             self.logger.error(f"Failed to load cache: {e}")

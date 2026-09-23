@@ -34,6 +34,11 @@ from src.core.ai_translator import (
     LocalLLMTranslator,
     GeminiTranslator,
 )
+from src.core.local_llm_server import (
+    LlamaServerError,
+    LlamaServerManager,
+    cleanup_stale_server,
+)
 from src.core.proxy_manager import ProxyManager
 from src.core.translation_pipeline import TranslationPipeline, PipelineWorker
 from src.core.tl_parser import TLParser, get_translation_stats
@@ -112,14 +117,23 @@ class AppBackend(QObject):
     enableDeepScanChanged = pyqtSignal()
     enableStatefulLexerChanged = pyqtSignal()
     enableDesktopNotificationsChanged = pyqtSignal()
+    checkForUpdatesOnStartupChanged = pyqtSignal()
     selectedEngineChanged = pyqtSignal(str)
     openaiApiKeyChanged = pyqtSignal()
     openaiModelChanged = pyqtSignal()
     openaiBaseUrlChanged = pyqtSignal()
     geminiApiKeyChanged = pyqtSignal()
     geminiModelChanged = pyqtSignal()
+    geminiSafetySettingsChanged = pyqtSignal()
     localLlmUrlChanged = pyqtSignal()
     localLlmModelChanged = pyqtSignal()
+    localLlmModeChanged = pyqtSignal()
+    localLlmGgufPathChanged = pyqtSignal()
+    localLlmServerPathChanged = pyqtSignal()
+    localLlmBackendChanged = pyqtSignal()
+    localLlmGpuLayersChanged = pyqtSignal()
+    localLlmCtxSizeChanged = pyqtSignal()
+    localServerStatusChanged = pyqtSignal()
     libretranslateUrlChanged = pyqtSignal()
     libretranslateApiKeyChanged = pyqtSignal()
     customEndpointUrlChanged = pyqtSignal()
@@ -184,6 +198,15 @@ class AppBackend(QObject):
         self.proxy_manager.configure_from_settings(self.config.proxy_settings)
 
         self.translation_manager = TranslationManager(self.proxy_manager, self.config)
+        # Owns the optional built-in llama-server child process (GGUF runner).
+        self.llama_server = LlamaServerManager(log_callback=self.logMessage.emit)
+        self._runtime_progress_pct: int = -1
+        # A hard kill of a previous run never reached shutdown(); reclaim the
+        # VRAM and port a surviving llama-server would still be holding.
+        try:
+            cleanup_stale_server()
+        except Exception as exc:
+            self.logger.debug(f"[AppBackend] stale llama-server cleanup skipped: {exc}")
 
         # ── SettingsBackend ───────────────────────────────────────────────
         self.settings = SettingsBackend(
@@ -213,9 +236,16 @@ class AppBackend(QObject):
         self.settings.on("openai_base_url", lambda: self.openaiBaseUrlChanged.emit())
         self.settings.on("gemini_api_key", lambda: self.geminiApiKeyChanged.emit())
         self.settings.on("gemini_model", lambda: self.geminiModelChanged.emit())
+        self.settings.on("gemini_safety_settings", lambda: self.geminiSafetySettingsChanged.emit())
         self.settings.on("local_llm_url", lambda: self.localLlmUrlChanged.emit())
         self.settings.on("local_llm_model", lambda: self.localLlmModelChanged.emit())
         self.settings.on("local_llm_model", lambda: self.hyMt2StatusChanged.emit())
+        self.settings.on("local_llm_mode", lambda: self.localLlmModeChanged.emit())
+        self.settings.on("local_llm_gguf_path", lambda: self.localLlmGgufPathChanged.emit())
+        self.settings.on("local_llm_server_path", lambda: self.localLlmServerPathChanged.emit())
+        self.settings.on("local_llm_backend", lambda: self.localLlmBackendChanged.emit())
+        self.settings.on("local_llm_gpu_layers", lambda: self.localLlmGpuLayersChanged.emit())
+        self.settings.on("local_llm_ctx_size", lambda: self.localLlmCtxSizeChanged.emit())
         self.settings.on("libretranslate_url", lambda: self.libretranslateUrlChanged.emit())
         self.settings.on("libretranslate_api_key", lambda: self.libretranslateApiKeyChanged.emit())
         self.settings.on("custom_endpoint_url", lambda: self.customEndpointUrlChanged.emit())
@@ -254,6 +284,8 @@ class AppBackend(QObject):
                 ).start()
             elif self._selected_engine == TranslationEngine.LIBRETRANSLATE:
                 threading.Thread(target=self._setup_libretranslate, daemon=True).start()
+            elif self._selected_engine == TranslationEngine.BING:
+                threading.Thread(target=self._setup_bing_translator, daemon=True).start()
             elif self._selected_engine == TranslationEngine.CUSTOM:
                 threading.Thread(
                     target=self._setup_custom_endpoint, daemon=True
@@ -328,6 +360,27 @@ class AppBackend(QObject):
         except Exception as exc:
             self.logger.error("[AppBackend] Custom endpoint kurulamadı: %s", exc)
 
+    def _setup_bing_translator(self) -> None:
+        """Bing / Microsoft Edge (anahtarsız) motorunu kurar; Google fallback bağlanır."""
+        try:
+            from src.core.translator import BingTranslator
+
+            bt = BingTranslator(
+                proxy_manager=self.proxy_manager,
+                config_manager=self.config,
+            )
+            fallback = self.translation_manager.translators.get(TranslationEngine.GOOGLE)
+            if fallback is None:
+                fallback = GoogleTranslator(
+                    proxy_manager=self.proxy_manager,
+                    config_manager=self.config,
+                )
+            bt.set_fallback_translator(fallback)
+            self._replace_translator(TranslationEngine.BING, bt)
+            self.logger.info("[AppBackend] Bing (Microsoft Edge) translator hazır.")
+        except Exception as exc:
+            self.logger.error("[AppBackend] Bing translator kurulamadı: %s", exc)
+
     @staticmethod
     def _engine_from_str(engine_str: str) -> TranslationEngine:
         """Safely converts a string engine name to TranslationEngine enum."""
@@ -338,6 +391,7 @@ class AppBackend(QObject):
             "deepseek": TranslationEngine.OPENAI,  # DeepSeek routed via OPENAI enum
             "gemini": TranslationEngine.GEMINI,
             "libretranslate": TranslationEngine.LIBRETRANSLATE,
+            "bing": TranslationEngine.BING,
             "custom": TranslationEngine.CUSTOM,
         }
         return mapping.get(engine_str.lower(), TranslationEngine.GOOGLE)
@@ -381,6 +435,8 @@ class AppBackend(QObject):
                 self._setup_ai_translator(engine)
             elif engine == TranslationEngine.LIBRETRANSLATE:
                 self._setup_libretranslate()
+            elif engine == TranslationEngine.BING:
+                self._setup_bing_translator()
             elif engine == TranslationEngine.CUSTOM:
                 self._setup_custom_endpoint()
         except Exception as exc:
@@ -413,10 +469,21 @@ class AppBackend(QObject):
                     )
                     self.logger.info("[AppBackend] OpenAI translator hazır.")
             elif engine == TranslationEngine.LOCAL_LLM:
-                translator = LocalLLMTranslator(
-                    proxy_manager=self.proxy_manager,
-                    config_manager=self.config,
-                )
+                # Built-in GGUF mode: run llama-server ourselves and translate
+                # against it, so no Ollama / LM Studio install is needed.
+                if getattr(self.config.translation_settings, "local_llm_mode", "external") == "builtin":
+                    base_url = self._start_builtin_server()
+                    translator = LocalLLMTranslator(
+                        proxy_manager=self.proxy_manager,
+                        config_manager=self.config,
+                    )
+                    translator._base_url = base_url
+                    translator._client = None  # rebuilt lazily against the new URL
+                else:
+                    translator = LocalLLMTranslator(
+                        proxy_manager=self.proxy_manager,
+                        config_manager=self.config,
+                    )
                 self.logger.info("[AppBackend] Local LLM translator hazır.")
             elif engine == TranslationEngine.GEMINI:
                 gemini_api_key = self.config.api_keys.gemini_api_key or ""
@@ -425,6 +492,16 @@ class AppBackend(QObject):
                     proxy_manager=self.proxy_manager,
                     config_manager=self.config,
                 )
+                # Safety-blocked / quota-exhausted / placeholder-broken items are
+                # delegated to Google Translate (same wiring the pipeline applies
+                # when it constructs the Gemini translator itself).
+                fallback = self.translation_manager.translators.get(TranslationEngine.GOOGLE)
+                if fallback is None:
+                    fallback = GoogleTranslator(
+                        proxy_manager=self.proxy_manager,
+                        config_manager=self.config,
+                    )
+                translator.set_fallback_translator(fallback)
                 self.logger.info("[AppBackend] Gemini translator hazır.")
             else:
                 return
@@ -506,7 +583,7 @@ class AppBackend(QObject):
     def useCache(self, val: bool) -> None:
         self.settings.set_use_cache(val)
 
-    @pyqtProperty(bool, notify=checkForUpdatesOnStartupChanged if 'checkForUpdatesOnStartupChanged' in locals() else uiTriggerChanged)
+    @pyqtProperty(bool, notify=checkForUpdatesOnStartupChanged)
     def checkForUpdatesOnStartup(self) -> bool:
         return self.settings.get_check_for_updates()
 
@@ -611,6 +688,8 @@ class AppBackend(QObject):
                 ).start()
             elif new_engine == TranslationEngine.LIBRETRANSLATE:
                 threading.Thread(target=self._setup_libretranslate, daemon=True).start()
+            elif new_engine == TranslationEngine.BING:
+                threading.Thread(target=self._setup_bing_translator, daemon=True).start()
             elif new_engine == TranslationEngine.CUSTOM:
                 threading.Thread(
                     target=self._setup_custom_endpoint, daemon=True
@@ -655,6 +734,153 @@ class AppBackend(QObject):
     @localLlmModel.setter
     def localLlmModel(self, val: str) -> None:
         self.settings.set_local_llm_model(val)
+
+    # ── Built-in GGUF runner (llama.cpp server) ──────────────────────────
+
+    @pyqtProperty(str, notify=localLlmModeChanged)
+    def localLlmMode(self) -> str:
+        return self.settings.get_local_llm_mode()
+
+    @localLlmMode.setter
+    def localLlmMode(self, val: str) -> None:
+        self.settings.set_local_llm_mode(val)
+
+    @pyqtProperty(str, notify=localLlmGgufPathChanged)
+    def localLlmGgufPath(self) -> str:
+        return self.settings.get_local_llm_gguf_path()
+
+    @localLlmGgufPath.setter
+    def localLlmGgufPath(self, val: str) -> None:
+        self.settings.set_local_llm_gguf_path(_normalize_path(val) or val)
+
+    @pyqtProperty(str, notify=localLlmServerPathChanged)
+    def localLlmServerPath(self) -> str:
+        return self.settings.get_local_llm_server_path()
+
+    @localLlmServerPath.setter
+    def localLlmServerPath(self, val: str) -> None:
+        self.settings.set_local_llm_server_path(_normalize_path(val) or val)
+
+    @pyqtProperty(str, notify=localLlmBackendChanged)
+    def localLlmBackend(self) -> str:
+        return self.settings.get_local_llm_backend()
+
+    @localLlmBackend.setter
+    def localLlmBackend(self, val: str) -> None:
+        self.settings.set_local_llm_backend(val)
+
+    @pyqtProperty(int, notify=localLlmGpuLayersChanged)
+    def localLlmGpuLayers(self) -> int:
+        return self.settings.get_local_llm_gpu_layers()
+
+    @localLlmGpuLayers.setter
+    def localLlmGpuLayers(self, val: int) -> None:
+        self.settings.set_local_llm_gpu_layers(val)
+
+    @pyqtProperty(int, notify=localLlmCtxSizeChanged)
+    def localLlmCtxSize(self) -> int:
+        return self.settings.get_local_llm_ctx_size()
+
+    @localLlmCtxSize.setter
+    def localLlmCtxSize(self, val: int) -> None:
+        self.settings.set_local_llm_ctx_size(val)
+
+    @pyqtProperty(str, notify=localServerStatusChanged)
+    def localServerStatus(self) -> str:
+        """stopped | downloading | starting | ready | error"""
+        return self.llama_server.status
+
+    @pyqtProperty(str, notify=localServerStatusChanged)
+    def localServerDetail(self) -> str:
+        return self.llama_server.base_url or self.llama_server.last_error
+
+    @pyqtProperty(bool, notify=localServerStatusChanged)
+    def localRuntimeReady(self) -> bool:
+        """True when a llama-server binary is available (own or downloaded)."""
+        try:
+            return self.llama_server.resolve_binary(
+                self.settings.get_local_llm_server_path(),
+                self.settings.get_local_llm_backend(),
+            ) is not None
+        except Exception:
+            return False
+
+    @pyqtSlot(result=str)
+    def localRuntimeDownloadSize(self) -> str:
+        """Human-readable size hint for the selected backend download."""
+        from src.core.local_llm_server import resolve_asset_name
+
+        name = resolve_asset_name(self.settings.get_local_llm_backend())
+        return name or ""
+
+    @pyqtSlot()
+    def downloadLocalRuntime(self) -> None:
+        """Downloads the pinned llama.cpp build (explicit user action)."""
+        backend = self.settings.get_local_llm_backend()
+
+        def _worker() -> None:
+            self.localServerStatusChanged.emit()
+            try:
+                self.llama_server.download_runtime(backend, progress_cb=self._on_runtime_progress)
+                self.logMessage.emit(
+                    "success",
+                    self._t("log_llama_runtime_ready", "llama.cpp runtime is ready."),
+                )
+            except LlamaServerError as exc:
+                self.logMessage.emit("error", str(exc))
+            except Exception as exc:
+                self.logger.error("[AppBackend] llama.cpp runtime download failed: %s", exc)
+                self.logMessage.emit("error", str(exc))
+            finally:
+                self._runtime_progress_pct = -1
+                self.localServerStatusChanged.emit()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_runtime_progress(self, downloaded: int, total: int) -> None:
+        if total <= 0:
+            return
+        pct = int(downloaded * 100 / total)
+        if pct >= getattr(self, "_runtime_progress_pct", -1) + 10:
+            self._runtime_progress_pct = pct
+            self.logMessage.emit("info", f"[llama.cpp] {pct}% ({downloaded // 1048576}/{total // 1048576} MB)")
+
+    @pyqtSlot()
+    def startLocalServer(self) -> None:
+        """Starts the built-in server with the configured GGUF model."""
+        def _worker() -> None:
+            self.localServerStatusChanged.emit()
+            try:
+                self._start_builtin_server()
+                # Rebuild the translator so it points at the new base URL.
+                self._setup_ai_translator(TranslationEngine.LOCAL_LLM)
+            except LlamaServerError as exc:
+                self.logMessage.emit("error", str(exc))
+            except Exception as exc:
+                self.logger.error("[AppBackend] llama-server start failed: %s", exc)
+                self.logMessage.emit("error", str(exc))
+            finally:
+                self.localServerStatusChanged.emit()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot()
+    def stopLocalServer(self) -> None:
+        self.llama_server.stop()
+        self.localServerStatusChanged.emit()
+
+    def _start_builtin_server(self) -> str:
+        """Starts (or reuses) the llama-server process; returns its base URL."""
+        ts = self.config.translation_settings
+        return self.llama_server.start(
+            model_path=getattr(ts, "local_llm_gguf_path", ""),
+            user_path=getattr(ts, "local_llm_server_path", ""),
+            backend=getattr(ts, "local_llm_backend", "vulkan"),
+            gpu_layers=getattr(ts, "local_llm_gpu_layers", -1),
+            ctx_size=getattr(ts, "local_llm_ctx_size", 4096),
+            parallel=max(1, int(getattr(ts, "ai_concurrency", 2) or 2)),
+            port=getattr(ts, "local_llm_server_port", 0),
+        )
 
     # ── AI Model Profile (Hy-MT2) Properties ──────────────────────────────
 
@@ -756,6 +982,14 @@ class AppBackend(QObject):
     @geminiModel.setter
     def geminiModel(self, val: str) -> None:
         self.settings.set_gemini_model(val)
+
+    @pyqtProperty(str, notify=geminiSafetySettingsChanged)
+    def geminiSafetySettings(self) -> str:
+        return self.settings.get_gemini_safety_settings()
+
+    @geminiSafetySettings.setter
+    def geminiSafetySettings(self, val: str) -> None:
+        self.settings.set_gemini_safety_settings(val)
 
     # ── Advanced AI Settings Properties ──────────────────────────────────
 
@@ -1024,14 +1258,20 @@ class AppBackend(QObject):
     def setTargetLanguage(self, lang: str) -> None:
         self.settings.set_target_language(lang)
         self._target_language = self.config.normalize_renpy_language_code(lang)
+        self.refreshUI()
 
     @pyqtSlot(result=list)
     def getSourceLanguages(self) -> list:
         return self.settings.get_source_languages()
 
+    @pyqtSlot(result=str)
+    def getSourceLanguage(self) -> str:
+        return self.settings.get_source_language()
+
     @pyqtSlot(str)
     def setSourceLanguage(self, lang: str) -> None:
         self.settings.set_source_language(lang)
+        self.refreshUI()
 
     # ── Project Slot ─────────────────────────────────────────────────────
 
@@ -1139,10 +1379,18 @@ class AppBackend(QObject):
             # Pipeline oluştur ve yapılandır
             self.pipeline = TranslationPipeline(self.config, self.translation_manager)
             target_path = self._tl_source_path if self._tl_mode else self._project_path
+            
+            # Ensure target and source languages are freshly synced from config
+            effective_target = self.config.normalize_renpy_language_code(
+                self.config.translation_settings.target_language or self._target_language or "turkish"
+            )
+            self._target_language = effective_target
+            effective_source = self.config.translation_settings.source_language or "auto"
+
             self.pipeline.configure(
                 game_exe_path=target_path,
                 target_language=self._target_language,
-                source_language="auto",
+                source_language=effective_source,
                 engine=self._selected_engine,
                 auto_unren=self.config.app_settings.unren_auto_download,
                 use_proxy=self.config.proxy_settings.enabled,
@@ -1191,6 +1439,11 @@ class AppBackend(QObject):
     @pyqtSlot()
     def shutdown(self, timeout_ms: int = 3000) -> None:
         """Safely persists settings and stops worker thread on application exit."""
+        try:
+            self.llama_server.stop()
+        except Exception as exc:
+            self.logger.warning(f"[AppBackend] llama-server stop on shutdown failed: {exc}")
+
         try:
             self.persistSettingsOnExit()
         except Exception as exc:

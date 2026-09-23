@@ -73,21 +73,49 @@ def is_rtl_language(lang_code: Optional[str]) -> bool:
 CORE_UI_RETRY_STRINGS = {
     "About",
     "Auto",
+    "Auto-Forward",
+    "Auto-Forward Time",
     "Back",
+    "Begin",
+    "Clipboard Voicing",
+    "Continue",
+    "Display",
+    "Empty Slot",
     "End Replay",
+    "Fast Forward",
+    "Fullscreen",
+    "Gallery",
     "Help",
     "History",
+    "Language",
     "Load",
     "Load Game",
     "Main Menu",
+    "Music",
+    "Music Volume",
+    "Page",
+    "Page Down",
+    "Page Up",
     "Preferences",
     "Prefs",
     "Q.Load",
     "Q.Save",
+    "Quit",
+    "Replay",
+    "Return",
+    "Rollback",
     "Save",
+    "Self-Voicing",
     "Skip",
+    "Slots",
+    "Sound",
+    "Sound Volume",
     "Start",
+    "Text Speed",
     "Unseen Text",
+    "Voice",
+    "Voice Volume",
+    "Window",
 }
 SEPARATOR_REMNANTS = ("|||", "RNLSEP", "SEP777", "TXTSEP")
 HOTKEY_SOURCE_RE = re.compile(r"^(?P<label>.+?)\s*/\s*(?P<hotkey>[A-Za-z])$")
@@ -97,7 +125,9 @@ VISIBLE_TEXT_APOSTROPHES = ("'", "\u2019", "\u2018", "\u02bc")
 VISIBLE_TEXT_DASHES = (" - ", " \u2013 ", " \u2014 ")
 VISIBLE_TEXT_SENTENCE_RE = re.compile(r"[^.!?\u2026]+(?:[.!?\u2026]+|$)")
 VISIBLE_TEXT_BRIDGE_PREFIXES = ("And", "But", "So", "Or", "Then")
-PLACEHOLDER_BRACKET_RE = re.compile(r"\[[^\]]+\]")
+# Shared with the parser/formatter: a bracketed phrase with spaces is display
+# text, not a placeholder (see syntax_guard.INTERPOLATION_RE).
+PLACEHOLDER_BRACKET_RE = re.compile(r"\[[^\[\]\s]+\]")
 RENPY_TAG_RE = re.compile(r"\{/?[^}]+\}")
 # v2.8.13: printf-style format specifiers (%s, %-5d, %(name)03d, %6.2f ...).
 # Covers flags (- + # 0), width, precision, length modifiers and every
@@ -108,6 +138,19 @@ PRINTF_SPEC_RE = re.compile(
     r"|%[-+#0]*\d*(?:\.\d+)?[hlL]?[diouxXeEfFgGcrsa]"
 )
 HTML_LEAK_RE = re.compile(r"</?(?:span|div)\b", re.IGNORECASE)
+# v2.8.17: strict grammar for the pure outer color-wrapper normalizer.
+# Only a literal safe hex argument is accepted — Ren'Py's four color
+# literal forms #rgb, #rgba, #rrggbb, #rrggbbaa. Anything else (named
+# colors, gui.* references, expressions, whitespace) fails validation
+# and the wrapped value is left untouched. Longest-first alternation so
+# an 8-digit literal is never clipped into a shorter partial match.
+SAFE_COLOR_HEX_RE = re.compile(
+    r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})"
+)
+OUTER_COLOR_WRAPPER_RE = re.compile(
+    r"^\{color=(?P<hex>#[0-9a-fA-F]{3,8})\}(?P<inner>.*)\{/color\}$",
+    re.DOTALL,
+)
 PLACEHOLDER_REMNANT_RE = re.compile(
     r"(?i)(?:R[A-Z]{0,6}LPH[0-9A-F]{3,}|XRPYX_[A-Z0-9_]+|RNPY_[A-Z0-9_]+)"
 )
@@ -132,7 +175,9 @@ RENPY_KEYWORDS_TO_SKIP = {
     'onlayer', 'zorder', 'parallel', 'block', 'contains', 'repeat', 'function',
     'layeredimage', 'group', 'attribute', 'auto', 'always', 'offer', 'side',
     'vpgrid', 'grid', 'fixed', 'hstack', 'vstack', 'drag', 'draggroup',
-    'hotspot', 'hotbar', 'dismiss', 'transclude', 'testcase', 'menu'
+    'hotspot', 'hotbar', 'dismiss', 'transclude', 'testcase', 'menu',
+    'style_prefix', 'style_suffix', 'text_style', 'size_group', 'variant',
+    'id', 'mousearea', 'selected', 'sensitive', 'action', 'hovered', 'unhovered'
 }
 HELPER_PROPERTY_RE = re.compile(
     r'^\s*(?:idle|hover|selected|selected_idle|selected_hover|background|foreground|add)\b'

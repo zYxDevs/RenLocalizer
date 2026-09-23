@@ -4,6 +4,204 @@ render_with_liquid: false
 
 # RenLocalizer Changelog
 
+#### [2.8.17] - 2026-09-23
+
+> **Built-in GGUF runner (no Ollama/LM Studio), keyless Bing / Microsoft Edge engine, Google Gemini overhaul, single-segment mode for pure translation models, a modern responsive multi-resolution UI, native TLID output fixes and a deep extraction-accuracy pass.**
+
+##### 🎨 Interface & Experience
+
+> **🎨 Modern Responsive UI & Multi-Resolution Support (`Main.qml`):**
+> - **Pro Studio Max-Width Centering:** Wrapped dashboard, settings, toolbox, logs, and glossary containers in an adaptive `Math.min(parent.width - 48, 1180)` layout with `anchors.horizontalCenter: parent.horizontalCenter`. Prevents awkward horizontal stretching across 2K / 4K ultrawide monitors and keeps content readable and tight, while remaining completely elastic on compact 980px windowed displays.
+> - **Persistent Sticky Headers (`z: 10`):** Elevated Dashboard, Settings, Studio Log Console, and Glossary action bars to pinned sticky headers. Page headers, filters, and action toolbars never scroll away when viewing large translation projects or extensive term glossaries.
+> - **High-DPI Adaptive Dimensions:** Replaced legacy hardcoded card heights with dynamic `implicitHeight + margin` layouts and smooth animations (`Behavior on Layout.preferredHeight`). Prevents clipped text strings under Windows 125%, 150%, and 200% system DPI scaling.
+> - **2-Column Responsive Language Mega-Flyout & Live Search:** Overhauled language selection into a modern DeepL / Google Translate desktop-style flyout. Features real-time keyboard search filtering, automatic focus, `Enter` key instant selection, and a responsive 2-column GridView displaying 20+ languages simultaneously without tedious scrolling. Includes intelligent right-aligned overflow protection (`x: Math.min(0, targetLangCombo.width - popup.width)`), preventing off-screen clipping on compact 980px windowed displays.
+> - **135+ Supported Languages Pool (`config.py`):** Expanded the core single source of truth language registry from 95 to 135 languages (136 for source including Auto-detect), achieving parity with Google Translate's full language catalog (added Sanskrit, Kurdish Kurmanji & Sorani, Uyghur, Assamese, Bhojpuri, Tatar, Occitan, Tuvan, Silesian, Crimean Tatar, etc.).
+> - **One-Click Language Swap (`⇄`):** Added a dedicated animated language swap button between source and target selectors for instant bidirectional language swapping with persistent config synchronization.
+> - **Clean Typography & Flag Artifact Elimination:** Removed broken country flag emojis that rendered as awkward double-letter character artifacts on Windows (`TR TR`, `GB EN`, `DE DE`). Replaced with clean native language names (`Türkçe`, `日本語`, `English`), localized names, and sleek uppercase language code badges (`[TR]`, `[JA]`, `[EN]`).
+> - **Windows DirectWrite & Font Noise Suppression (`run.py`, `run_cli.py`):** Configured `QT_LOGGING_RULES` and `QLoggingCategory.setFilterRules` prior to and during Qt initialization to permanently silence noisy harmless DirectWrite raster font warnings (`8514oem` `CreateFontFaceFromHDC()`) and missing OpenType script warnings (`Segoe UI script 20`) on Windows consoles.
+
+> **⚙️ 3-SubTab Segmented Settings Navigation (`Main.qml`):**
+> - **Segmented SubTabs:** Divided the monolithic settings scroll into 3 dedicated sub-views: `0: General & Output`, `1: Artificial Intelligence (AI)`, and `2: Performance & Network`.
+> - **Danger Zone Isolation:** Relocated destructive actions (`Clear Translation Cache` and `Factory Reset`) into an isolated, red-themed Danger Zone card at the bottom of General Settings to eliminate accidental data loss.
+> - **2-Column Balanced Switch Grid:** Grouped network and parser switches (`Multi-Endpoint`, `Parallel Batch`, `RPYC AST`, `Stateful Lexer`) into a clean 2-column `GridLayout`.
+> - **Multi-Line System Prompt Area:** Replaced single-line TextField with a 96px scrollable `TextArea` featuring auto word-wrap and glow focus-ring.
+
+> **⚡ Studio Log Terminal (`Main.qml`):**
+> - **Eliminated Nested ScrollView Anti-Pattern:** Removed nested `ScrollView` containing a `ListView` to resolve mouse wheel conflict and stutter. Implemented a hardware-accelerated full-view terminal.
+> - **Instant Level Filters:** One-click filtering tags (`ALL`, `INFO`, `WARN`, `ERROR`) allowing translators to immediately isolate warnings and errors.
+> - **Live Search & Auto-Scroll:** Added instant keyword search within console logs and automatic scroll-to-bottom (`positionViewAtEnd()`) during live batch translation.
+
+> **🛠️ Modular 2-Column Toolbox & Live Search Glossary (`Main.qml`):**
+> - **2-Column Toolbox Grid:** Redesigned single-column heavy cards into a 2x2 modular grid with tool status badges (`FONT`, `LINT`, `GLOSSARY`, `PIPELINE`) and deduplicated button emojis.
+> - **Live Searchable Glossary:** Added real-time search input (`filteredGlossaryModel()`) filtering both source and target terms on keystroke.
+> - **Empty State Feedback:** Integrated informative Empty State cards informing users when no terms are loaded or when a search yields zero matches.
+
+> **🌐 UI Language Persistence & Complete Dialog Localization (`Main.qml`, `app_backend.py`, `settings_backend.py`, `locales/*.json`):**
+> - **Language Selection Persistence on Launch:** Fixed an issue where `targetLangCombo`, `sourceLangCombo`, and `uiLanguageCombo` initialized to index 0 (defaulting to Turkish) on restart. Added dedicated `syncTargetLanguage()`, `syncSourceLanguage()`, and `syncUILanguage()` functions tied to both `Component.onCompleted` and `Connections.onUiTriggerChanged`.
+> - **Zero Missing Dialog Keys Across All 9 Locales:** Populated 9 missing UI keys (`completion_summary_subtitle`, `dialog_ok`, `dialog_cancel`, `warning_title`, `factory_reset_subtitle`, `factory_reset_done_sub`, `glossary_dlg_add_sub`, `glossary_add_btn`, `update_download_btn`) across all 9 locale files (`ru`, `en`, `tr`, `de`, `es`, `fr`, `fa`, `zh-CN`, `ja`), eliminating untranslated Turkish fallback text in completion modals and warning dialogs.
+
+> **🖥️ QML Dialog Title & Color Fixes (`Main.qml`):**
+> - **`cleanModalTitle` Arity:** Fixed four dialog titles (three in `Main.qml`, one in `components/GlossaryAddDialog.qml`) that passed the `uiTrigger` bool as the title string, raising `TypeError: Property 'replace' of object true is not a function` at startup; restored the comma-operator binding-trigger pattern and added a QML integrity test that rejects any helper called with `uiTrigger` as an argument.
+> - **Undefined `clrTxtMuted`:** Added the missing muted-text color property used by the local-LLM model tip.
+
+##### 🔌 Translation Engines
+
+> **🖥️ Built-in GGUF Runner — Local Models Without Ollama / LM Studio (`local_llm_server.py`, `constants.py`, `config.py`, `settings_backend.py`, `app_backend.py`, `cli_main.py`, `Main.qml`, `locales/*.json`):**
+> - **Bring Your Own `.gguf`:** A new Local LLM run mode ("Built-in GGUF runner") starts llama.cpp's OpenAI-compatible `llama-server` itself, so a user who already has GGUF models no longer has to install a separate inference app. `LocalLLMTranslator` is unchanged — it simply receives the local base URL.
+> - **Explicit, Verified Runtime Download:** On request only, RenLocalizer fetches the pinned llama.cpp build (`LLAMACPP_PINNED_BUILD`) from the official GitHub release, verifies it against the SHA256 digest GitHub publishes per asset, and extracts it into the application data folder with path-traversal protection. Default backend is Vulkan (~30 MB, NVIDIA/AMD/Intel, no CUDA Toolkit); CUDA (~240 MB) and CPU (~17 MB) are selectable. Users with their own `llama-server` can point at it instead and skip the download entirely. **No model is ever downloaded**, and the packaged release size is unchanged.
+> - **Process Lifecycle:** Free-port selection, `GET /health` polling (503 = model still loading), idempotent stop, and termination on application exit (`AppBackend.shutdown`) and on CLI exit (`atexit`). Windows launches are windowless, matching the existing `unrpyc_adapter` pattern.
+> - **No Orphaned Servers:** A hard kill of RenLocalizer (Task Manager, crash) never runs the shutdown hook, which would leave `llama-server` holding VRAM and its port — verified to happen. Three layers now prevent it: a Windows **Job Object** with `KILL_ON_JOB_CLOSE`, `prctl(PR_SET_PDEATHSIG)` on Linux, and a pid file that lets the next launch reclaim a leftover process (the only defence on macOS). The pid is killed only when the OS still reports it as a `llama-server`, so a recycled pid is never touched.
+> - **Real Failure Messages:** The server's own output is captured instead of discarded, so a failed start reports the actual cause (e.g. `failed to load model`, `ggml_vulkan: no devices found`) next to the exit code. The log is removed after a clean stop and kept when the server dies on its own; leftovers older than a day are pruned at startup.
+> - **Interrupted Downloads Are Never Reused:** Extraction writes a completion marker, so a half-extracted runtime (crash, full disk, antivirus) is discarded and re-downloaded instead of starting an `llama-server.exe` whose DLLs are missing.
+> - **Survives a Vanished Pinned Build:** If the pinned nightly no longer carries the needed asset, the newest release that does is used (with a log line). Integrity is unaffected — the SHA256 always comes from the release metadata — and a GitHub error object (rate limit, outage) is handled instead of crashing.
+> - **Concurrency:** Start, stop and download are serialised, so the Start button and the pipeline's own setup thread cannot spawn two servers or run two downloads into the same directory.
+> - **Settings & UI:** Run mode, GGUF path picker, GPU backend, GPU layers (`auto` by default — llama-server fits what the GPU can hold), context size, own-binary path, live status dot and Download/Start/Stop buttons, localized in all 9 interface languages. Available from the CLI too (`-e local_llm` with the built-in mode enabled).
+
+> **🪟 New Keyless Engine: Bing / Microsoft Edge (`services.py`, `constants.py`, `manager.py`, `orchestrator.py`, `app_backend.py`, `settings_backend.py`, `cli_main.py`, `Main.qml`, `locales/*.json`):**
+> - **Second Free Engine Family:** Added `BingTranslator` (`TranslationEngine.BING`) on top of the Edge browser's web-translation endpoint (`edge.microsoft.com/translate/translatetext?isEnterpriseClient=false`). No API key, token, cookie or account is involved — the former `/translate/auth` JWT flow that most third-party tools relied on was retired by Microsoft in August 2026 (HTTP 404) and is deliberately not used. The request family is fully independent from Google's, so translation keeps working while Google's endpoints are IP-throttled.
+> - **Pipeline-Native Placeholder Handling:** Requests are sent as plain text with the pipeline's raw `⟦…⟧` protection tokens; the service passes them through untouched (verified live — HTML mode with `<span class="notranslate">` swallowed neighbouring words and even translated the `class` attribute). Results go through `restore_renpy_syntax()` → `validate_translation_integrity()` → `inject_missing_placeholders()`, matching the Google/LibreTranslate contract.
+> - **Batching & Limits:** Up to 100 items / ~40k characters per request (`ENGINE_BATCH_SIZE_CAPS["bing"] = 100`), 3 concurrent chunks, jittered retry on `429`, automatic half-splitting when the service answers `400 Request exceeds the maximum allowed translation size`, no retry on unsupported-language `400`/`403`.
+> - **No Google Traffic for Unchanged Strings (`base.py`, `translating.py`, `services.py`):** `BaseTranslator.fallback_for_unchanged_retry` lets an engine opt out of the unchanged-string second-opinion fallback; `BingTranslator` sets it to `False`, so selecting Bing produces zero Google requests unless Bing itself fails hard (403, contract change, placeholder loss) — and that delegation is now announced in the log (`log_bing_fallback`, 9 locales) instead of happening silently.
+> - **Cooldown-Aware Second Opinion (`translating.py`):** The unchanged-string retry chain (same engine → fallback engine) now skips the fallback while it is inside its own 429 cooldown window (`_global_cooldown_until`), so a throttled Google no longer stalls a Bing/Gemini run with 3s/6s/12s global cooldowns just to re-check short UI words.
+> - **Google Fallback:** Items that fail hard (rate-limit exhaustion, contract change, placeholder loss) are delegated to the registered `GoogleTranslator` with the very same token-protected requests; results keep `engine=bing` for cache coherence and record `metadata['fallback_engine']`. Wired in the pipeline (`orchestrator.py`), the GUI (`_setup_bing_translator`) and the CLI (`-e bing`).
+> - **Language Code Mapping:** `zh-CN→zh-Hans`, `zh-TW→zh-Hant`, `pt-BR→pt`, `no→nb`, `tl→fil`, `sr→sr-Cyrl`, `auto` omits `from` for server-side detection.
+> - **UI & Localization:** "🪟 Bing / Microsoft Edge" entry in the engine selector with `engine_desc_bing` translated in all 9 interface languages.
+
+> **🧩 Single-Segment Mode & Hy-MT Prompt Correctness (`ai_translator.py`, `config.py`, `orchestrator.py`, `Main.qml`):**
+> - **Hy-MT Models No Longer Forced Into Batch Scaffolding:** Tencent Hy-MT / Hunyuan-MT are pure *translation* models, not instruction models: their model card defines a single shape. `translate_batch()` nevertheless wrapped them in scene/XML/JSON structures with `[ID]` tags, which small quants (1.8B Q4) could not reproduce — the batch then failed to parse and every line was retried individually, which was both slow and lower quality than asking correctly once. These models now translate one segment per request through the existing model-card prompt (`_build_hy_mt2_single_prompt`), with concurrency bounded by the translator's own semaphore.
+> - **New `ai_batch_format = "single"`:** The same behaviour is now selectable for any engine ("Single Line Mode"), sending each line as its own request with no neighbouring-line or speaker context — recommended for small local models that cannot keep a batch format intact.
+> - **Settings Transparency:** The AI settings tab now states that the batch-format selector does not apply to Hy-MT profiles, and warns that `ai_custom_system_prompt` is **ignored** while the Hy-MT profile is active (Hy-MT models have no system prompt) — previously this was only an INFO log line, so users filled in a field that never reached the model. The warning is gated on the Local LLM engine, matching the Model Profile selector it points at: `hyMt2Active` is derived from the model name alone, so it can be true while another engine is selected and that selector is hidden.
+
+> **🛡️ Gemini Safety Filter Integration (`ai_translator.py`):**
+> - **Full Harm Category Mapping:** Wired `gemini_safety_settings` (default `BLOCK_NONE`) directly into `GenerateContentConfig` across all 5 standard categories (`HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_DANGEROUS_CONTENT`, `HARM_CATEGORY_CIVIC_INTEGRITY`). Previously, safety settings were ignored, causing Google's default `BLOCK_MEDIUM_AND_ABOVE` filter to reject mature/NSFW visual novel dialogue, consuming input tokens while silently returning untranslated original text.
+
+> **🧠 Runaway Reasoning & Thinking Token Elimination (`ai_translator.py`):**
+> - **Zero Thinking Budget for Translation:** Integrated `types.ThinkingConfig(thinking_budget=0)` for Gemini 2.5 and Gemini 3.x series models (including `gemini-3.1-flash-lite` and `gemini-2.5-flash`). Prevents reasoning models from exhausting token limits on internal thought tokens, eliminating empty `response.text` stalls and accelerating translation speed by up to 10x.
+
+> **📦 Structured XML Batch Translation & Free Tier RPM Protection (`ai_translator.py`):**
+> - **15x API Call Reduction:** Overhauled `GeminiTranslator.translate_batch()` to package requests into XML structures (`<translations><item id="...">...`) with system instructions, replacing the previous sequential single-request loop. Requests are chunked by `ai_batch_size` (max 50 per call) and bounded by a lazily-created request semaphore. Eliminates premature `429 Resource Exhausted` rate-limiting on Google AI Studio Free Tier (10–15 RPM limits), reduces prompt token overhead by ~70%, and introduces jittered exponential backoff plus a per-call `ai_timeout` guard.
+
+> **🔄 BaseTranslator Fallback Registration & Active Delegation (`base.py`, `ai_translator.py`):**
+> - **Resolved Pipeline Initialization Bug:** Added `set_fallback_translator()` and `_fallback` tracking to `BaseTranslator`, resolving an `AttributeError` when `orchestrator.py` configured fallback translators for Gemini.
+> - **Active Failover:** When Gemini requests encounter unrecoverable content blocks, rate-limit exhaustion, empty answers, or placeholder loss, they are delegated to the attached fallback engine (`GoogleTranslator`). The fallback receives the **original, unprotected** source text (not the AI-only `<ph>` XML form) so it can apply its own placeholder scheme; the GUI-built Gemini translator (`app_backend.py`) now attaches the fallback too, matching the pipeline wiring.
+
+> **🏷️ Syntax Guard & Placeholder Restoration (`ai_translator.py`):**
+> - Gemini answers are passed through `restore_renpy_syntax_xml()` + `validate_translation_integrity()` (same contract as the OpenAI path), so `<ph id="N">` protection tags become `[var]` / `{color}` again before reaching the output. Answers that drop a placeholder are never emitted; they are delegated to the fallback engine or reported as failures with the clean source text.
+> - `_parse_xml_batch()` now preserves inner content when a model returns protection tags unescaped inside `<item>` elements (ElementTree previously kept only the text before the first child tag), benefiting every XML-mode AI engine.
+
+> **🎛️ Synchronized AI Quick Config Bar on Dashboard (`Main.qml`, `app_backend.py`, `settings_backend.py`):**
+> - **Context-Aware Dashboard Controls:** Added an animated, collapsible AI Quick Config Bar below the translation engine selector on the main dashboard (`navIndex === 0`). Dynamically surfaces required API credentials, model selectors, and safety filter levels whenever an AI engine (`gemini`, `openai`, `deepseek`, `local_llm`) is selected.
+> - **Two-Way Parity with Settings Tab:** Changes made on the Dashboard instantly synchronize with the full Settings tab (`navIndex === 1`) and vice-versa through reactive `@pyqtProperty` and signal subscriptions (`geminiSafetySettingsChanged`, etc.).
+> - **Gemini Safety Filter Dropdown:** Exposed `BLOCK_NONE` (NSFW/Unrestricted, recommended for Visual Novels), `BLOCK_ONLY_HIGH`, and `STANDARD` settings in both Settings tab and Dashboard quick bar.
+> - **Universal 9-Language Localization:** Added all AI Quick Config and Gemini safety level keys (`ai_quick_config_title`, `label_gemini_safety`, `gemini_safety_block_none`, `gemini_safety_only_high`, `gemini_safety_standard`) across all 9 supported interface languages (`de`, `en`, `es`, `fa`, `fr`, `ja`, `ru`, `tr`, `zh-CN`).
+
+> **🔧 Persisted Engine Selection Fix (`settings_backend.py`):**
+> - `SettingsBackend` rejected `gemini` (and now `bing`) at startup because the engine allowlist and its string→enum map only knew Google/OpenAI/Local LLM/LibreTranslate/Custom, silently reverting a saved Gemini selection to Google on every restart. Both lists now cover every selectable engine.
+
+> **🤖 AI / OpenRouter Batch Scaling & Fallback Protection (`config.py`, `translating.py`):**
+> - **Safe Default Batch Size (50 -> 15):** Adjusted default `ai_batch_size` from 50 to 15 (matching `ai_scene_batch_size`). Prevents smaller or budget OpenRouter/local models from timing out or dropping lines on oversized chunks, avoiding sequential one-by-one retry spirals that previously caused 30+ minute stalls.
+
+##### 📤 Translation Output & Guards
+
+> **♻️ Translation Cache Reuse Fix — Long-Standing (`manager.py`):**
+> - **Re-translating Everything on Every Run (present in 2.8.16 and earlier):** Cache lookups normalise to the original (unprotected) text, but stores used `result.original_text` — and AI engines return the XML/token-protected text they were handed. Every line containing a placeholder (`[name]`, `{b}`…) was therefore written under a key no lookup could ever match, so it was re-translated on every run and after every restart, at full API cost. Plain lines without placeholders happened to work, which hid the loss. Lookup and store now share one `_cache_key_for()` helper, so the key no longer depends on what a translator puts in `original_text`. Measured on repeated identical batches: **1 API call then 0**, including across a save/load cycle (previously 1 every time). Existing projects therefore pay for one more full translation pass, after which repeat runs really are free.
+> - **Legacy Cache Cleanup:** Entries written under placeholder-protected text by earlier builds are dropped while loading instead of consuming cache capacity forever.
+
+
+> **⚡ Native TLID Mode & Performance Optimization (`saving.py`, `orchestrator.py`, `extraction.py`, `parser.py`, `rpyc_reader.py`):**
+> - **Multi-Branch Dialogue Duplicate Preservation (`parser.py`, `rpyc_reader.py`, `extraction.py`, `orchestrator.py`):** Fixed a major issue where dialogues with identical text across branching story paths (`if/else` conditions or repeated lines) were deduplicated by text alone, dropping the alternate branch entries. Because Ren'Py compiles each branch statement into an independent AST node with its own TLID, missing branch entries caused alternate game paths to display untranslated English text. Both parser and RPYC reader now include line numbers in dialogue deduplication keys, and `generate_native_tlid_content` / `generate_translation_files` separate dialogue preservation by location while maintaining single-entry rules for UI strings (salvaged 2,309 branch dialogue lines across 52 files in Sorcerer 2).
+> - **Spoken Dialogue Code-Filter Protection & Regex Boundary Tightening (`output_formatter.py`, `extraction.py`):** Refined `_PYTHON_CODE_RE` so `raise` and `import` require statement boundaries and Exception/module syntax, preventing natural sentences (e.g. `"...if I raise my hand against you."`) from being falsely dropped as Python statements. Furthermore, spoken dialogue with character attribution is now explicitly safeguarded against technical code-filter skips.
+> - **Native Mode UI & Screen String Blocks:** Enhanced `generate_native_tlid_content()` to emit native `translate <lang> strings:` blocks alongside `translate <lang> <tlid>:` blocks for screen and UI files (e.g. `screens.rpy`, `options.rpy`, `customscreens.rpy`). Native TLID mode now provides 100% coverage for menus, preferences, buttons, and dialogues natively without requiring `strings.json` or runtime hooks.
+> - **Menu Choice Dialogue Classification Parity (`parser.py`, `extraction.py`):** Fixed a critical flaw where dialogues and narrations within Ren'Py `menu:` choice blocks (e.g. `CHARACTER "..."` and inner narrations) had their `text_type` overwritten to `'menu'` due to menu context tracking. In Native TLID mode, this erroneously diverted dialogue lines into `translate strings:` instead of native `translate <lang> <tlid>:` blocks. Since Ren'Py's dialogue engine natively resolves `Say` statements exclusively via TLID blocks, menu dialogues were omitted and displayed untranslated in English in-game. RenPyParser now preserves `dialogue` and `narration` classification for statements inside menu choice blocks, restoring native translation for all in-menu dialogues (e.g. 1,368 dialogue lines across 18 files in Sorcerer 2).
+> - **Global `old "..."` Uniqueness Across Generated Files (`extraction.py`, `orchestrator.py`):** Ren'Py keys string translations globally, so the same `old "..."` in two files under `tl/<lang>/` aborts the game at startup (`A translation for "KYAHHHHHHHHHH!!" already exists at ...`, reported against FunTanariZ 1.12). Native TLID generation demotes dialogue spoken by multi-speaker or engine-code speakers into string entries, and that demotion ran **per file**, after the pipeline's global dedup — which deliberately lets dialogue through by location to preserve branches. The dedup set is now shared across every file of a run and seeded with the entries already on disk, so a line repeated in several scripts emits `old` exactly once.
+
+> - **Native TLID File Merge & Idempotent Deduplication (`orchestrator.py`, `extraction.py`):** Introduced `merge_tl_content()` to reliably merge newly extracted entries into pre-existing `.rpy` translation files. Prevents newly discovered dialogue blocks from being discarded when appending string entries, eliminates duplicate `translate <lang> strings:` headers across incremental runs, and parses pre-existing TLIDs and `old "..."` strings to eliminate duplicate blocks and duplicate strings from being emitted, preventing Ren'Py compilation crashes. Hardened `generate_native_tlid_content()` against string engine codes and multi-speaker string duplication.
+> - **Native TLID Cache Lookup Index (`extraction.py`):** Pre-filled translations for native `translate <lang> <tlid>:` blocks are resolved through a one-time `(target, text)` index over the translation cache instead of a per-entry scan, keeping native output generation linear on 50k+ line projects.
+> - **Omit Redundant `strings.json` in Native Mode:** In Native TLID output mode (`output_mode == 'native'`), Ren'Py natively executes translation blocks via `.rpy` files without the runtime hook. The pipeline now skips generating `strings.json` entirely and purges any stale `strings.json` from `game/tl/<lang>/`, completely resolving severe memory lag on Ren'Py 7 (Python 2.7) games where 10MB+ JSON files caused performance drops.
+> - **Save Pipeline Efficiency:** Bypasses large-scale raw mapping and variant synthesis when in Native TLID mode, saving CPU cycles and disk I/O on projects with 50k+ dialogue lines.
+
+> **📁 Clean `tl/<lang>/` Directory & Diagnostics Isolation (`saving.py`, `runtime_hook_template.py`):**
+> - **Relocated Diagnostics to Hidden `.diagnostics`:** Diagnostic logs (`diagnostic_<lang>.json`, `translation_blocked_or_fallback.json`, `strings_json_skipped_corruptions.json`, `runtime_missed_strings.jsonl`) are now saved under `game/tl/.diagnostics/<lang>/` instead of directly inside `game/tl/<lang>/diagnostics/`.
+> - **Pristine Translation Directory:** Ren'Py completely ignores directories prefixed with a dot (`.`), leaving `game/tl/<lang>/` strictly containing clean, native Ren'Py translation scripts (`.rpy`), providing an uncluttered workspace for Notepad++ and regex workflows. Automatically purges legacy `diagnostics/` folders inside `tl/<lang>/`.
+
+> **🔄 Core UI Keyword Case & Quote Resilience (`orchestrator.py`, `extraction.py`, `constants.py`):**
+> - **Case-Insensitive & Quote-Stripped Unchanged Matching:** Enhanced unchanged detection for `CORE_UI_RETRY_STRINGS` to catch lowercase (`return`) and quoted (`"Return"`) model outputs. Reopens stale lowercase/quoted entries during TL parsing and retries or restores canonical title-case formatting when models fail to translate engine UI keywords.
+> - **Expanded System Terms:** Added `Quit`, `Return`, `Gallery`, `Music`, `Sound`, `Auto-Forward`, etc. to `CORE_UI_RETRY_STRINGS`.
+
+> **🛡️ Translation Guard & Color Wrapper Normalization (`constants.py`, `translating.py`, `orchestrator.py`):**
+> - **Pure Outer Color Wrapper Normalizer:** Safely unwraps exactly one balanced outer `{color=#hex}...{/color}` wrapper added by translation engines on untagged sources, preserving Ren'Py syntax integrity without weakening the strict corruption guard.
+> - **Strict Source Tag Boundary:** Any source string containing Ren'Py tags (including disambiguation `{#...}`) remains completely untouched and protected by the strict classifier.
+> - **Safe Color Grammar:** Validates literal `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa` hex formats; rejects nested, mismatched, empty, or non-hex color tags.
+
+> **🔁 Sentence-Shaped Unchanged 1-Shot Retry (`translating.py`, `orchestrator.py`):**
+> - **Deterministic Natural Language Detection:** Analyzes unchanged engine outputs using deterministic sentence-shape heuristics (`is_sentence_shaped_natural_language`), triggering a single controlled retry for likely sentences (e.g. `She strokes your cock.`).
+> - **Strict Negative Boundaries:** Prevents forced translation of character names, interjections, UI labels, engine commands, and code identifiers.
+
+> **💾 Save-Path Parity & Stale TL Requeue Policy (`saving.py`, `extraction.py`):**
+> - **Full Dictionary & Script Parity:** Applies color wrapper normalization in `_try_add` before dictionary insertion, ensuring identical clean strings in both `.rpy` and `strings.json`.
+> - **Strict Stale TL Requeue:** Retains strict corruption classification in `reopen_stale_tl_entries()` so previously corrupted TL entries are automatically requeued for clean translation.
+
+> **🌍 RTL & CJK Corruption-Filter Fix (`output_formatter.py`):**
+> - **Legitimate Non-Latin Scripts No Longer Skipped:** The corruption safety-net (`_should_skip_translation`) classified Arabic, Persian, Hebrew, Urdu, and short Japanese/Korean/CJK words as "corrupted" because the allowed character set omitted RTL ranges and CHECK 6 counted *all* non-ASCII characters as "unusual". Real RTL dialogue (e.g. `مرحبا بكم في اللعبة`) and short CJK UI words (e.g. `こんにちは`, `セーブ`) are now preserved, while replacement chars, PUA, and random binary bytes still trigger the skip.
+
+> **🔁 Exporter Backslash Round-Trip Fix (`exporter.py`):**
+> - **Order-Independent Unescape:** Replaced the chained `.replace()` unescape (which misread an escaped `\\n` as a real newline) with a single left-to-right pass, preventing literal-backslash source strings from being re-exported as duplicate Ren'Py `old` entries.
+
+##### 🔍 Extraction Accuracy
+
+> **📜 Dialogue Wrapped Across Physical Lines Was Skipped (`parser.py`):**
+> - **Whole Lines Stayed English:** Ren'Py lets a plain `"..."` string continue on the next physical line, and its lexer reads that as one string, collapsing the newline and the continuation's indentation into a single space. The parser only recognised the triple-quoted form (`"""`), so the opening line matched no pattern and the entire line of dialogue was dropped before translation — it never appeared in `tl/`, so the game showed it in English with no sign anything was missing. **325 lines were recovered in FunTanariZ 1.12** (16,479 → 16,804 extracted entries across 138 scripts).
+> - **Logical-Line Joining:** Continuations are now merged before pattern matching, with the same single-space collapse Ren'Py performs. Consumed lines are blanked rather than removed, so every entry keeps its real line number. Two safety rails keep the join honest: only a double quote opens a joinable string (an apostrophe in prose such as `Turkish'ye` or `don't` is not a string start — the first scan of a real game hit exactly that inside a Python docstring), and triple-quoted blocks are tracked across lines and never joined. A string that never closes restores the original lines, so a malformed script behaves exactly as before, and the scan is capped at 20 continuation lines.
+
+
+> **🔖 Escaped Literal Brackets Left Untranslated (`parser.py`, `syntax_guard.py`, `output_formatter.py`, `translating.py`, `constants.py`):**
+> - **Menu Labels Stayed English:** A label written as `"\[Sleep until the next morning\]"` is display text — Ren'Py's lexer turns the source escape into `[[` (renpy/lexer.py `dequote`), and `[[` renders as a literal `[`, precisely so the rest is *not* interpolated. Four components each carried their own `\[[^\]]+\]` rule and each mistook such a label for a variable: the parser refused to extract it (path-indicator, symbol-ratio, alpha-ratio and technical-placeholder heuristics all fired), the output formatter skipped it as "markup only", the protector packed the whole sentence into a single placeholder so the words never reached the engine, and the corruption guard reverted the translation as a placeholder-set mismatch. **FunTanariZ 1.12 alone has 309 such labels across 24 files, every one of which stayed English** (reported with `[Sleep until the next morning]`, `[Take her to the police station]`, `[Do "Release Exchange"]`).
+> - **One Shared Definition:** Ren'Py interpolation holds a Python expression and therefore never contains a bare space, so `INTERPOLATION_RE` (`syntax_guard.py`) now states that once and the placeholder comparison, the formatter's markup check and the guard all use it. Escapes — both `\[` and a lone `[[` — are protected as tokens of their own, so the words are translated and the escape round-trips untouched. Verified end-to-end against the reported game: the label is now extracted, translated and written as `old "[[Sleep until the next morning]"` / `new "[[Ertesi sabaha kadar uyu]"`, byte-identical to what Ren'Py's own `quote_unicode` would write.
+> - Variables (`[player_name]`), attribute access (`[config.name]`), expressions (`[a + b]`), calls and argument lists are still recognised as placeholders and left untouched.
+
+
+> **🔤 Mixed-Case Underscore Identifier Filtering (`parser.py`, `output_formatter.py`):**
+> - **Generalized Underscore Identifier Skip:** `is_meaningful_text()` previously rejected only all-lowercase snake_case tokens (`game_state`), letting mixed-case identifiers such as `u2_Fire_And_Ice`, `alt_K_RETURN`, `shift_K_INSERT`, and `meta_K_LEFT` slip through into translation output. This produced 138 false positives in Sorcerer 2's `translation_blocked_or_fallback.json` unchanged report. The parser now rejects any alphanumeric+underscore token containing no spaces, and the output formatter gains a matching `_IDENTIFIER_WITH_UNDERSCORE_RE` safety-net for parity.
+
+> **🧹 Deep-Scan AST Hardening (`parser.py`):**
+> - **Docstring, Attribute-Call & Subscript Key Exclusion:** `deep_scan_strings_ast()` now collects module/function/class docstrings, the 2nd-argument attribute-name string of `hasattr`/`getattr`/`setattr`/`delattr` calls, and string subscript keys (e.g. `store['var']`, `d['key']`), excluding them from translation candidates. Sphinx directives (`:doc:`, `:param:`, `:return:`, ...) and underscore-joined identifier tokens are additionally skipped.
+
+> **🐛 Period-Sentence False-Positive Fix (`deep_extraction.py`):**
+> - **Removed Over-Broad Dot Match:** `DeepVariableAnalyzer.is_technical_string()` contained a bare `\.` regex alternative that matched any string containing a period, silently dropping every period-ending dialogue sentence from deep-scan and expression-based extraction. The check now matches only URLs, `www.` prefixes, and explicit file extensions.
+
+> **🖥️ Screen Property Fake-Dialogue Prevention (`parser.py`, `constants.py`):**
+> - Screen/style properties (`style_prefix`, `id`, `variant`, `text_style`, `size_group`, ...) are no longer misclassified as character dialogue. Added negative lookaheads to speaker/attribute tokens plus a Ren'Py screen guard, and extended `RENPY_KEYWORDS_TO_SKIP`. Eliminated 68 fake `translate turkish ... style_prefix ""` blocks in Sorcerer 2.
+
+> **📄 Python Docstring & Sphinx Directive Filtering (`rpyc_reader.py`):**
+> - `_extract_from_code_obj()` now collects `Module`/`FunctionDef`/`AsyncFunctionDef`/`ClassDef` docstrings via `ast.get_docstring(clean=False)` and excludes them along with Sphinx directives from translation extraction (eliminated 135 docstring false positives from `renpy/common/`).
+
+> **💬 Quoted Speaker & Quote Flexibility (`tl_parser.py`):**
+> - TL parsing now supports quoted character names (`# "Lan" "Hello world"`) and single-quoted strings (`'...'`), using named-group quote matching and single-quote unescaping, preventing file corruption when speakers are quoted.
+
+##### 🧰 Stability, Diagnostics & Docs
+
+> **🈳 Injected Language File Could Raise During Init (`saving.py`):**
+> - The generated `zzz_<lang>_language.rpy` runs inside the **game's** Python, but its two defensive `except Exception:` handlers called RenLocalizer's `logger` — a name the Ren'Py runtime does not have. Any failure inside those try blocks therefore raised `NameError: name 'logger' is not defined` on top of it, at init time, turning a harmless fallback into a crash. Both handlers are now bare `pass`, and tests assert that the generated file parses as Python, references no name the game lacks, and contains no game statements (`label`, `jump`, `call`, `$`, `default`).
+
+
+> **🔌 Stateful Lexer Signal Fix (`settings_backend.py`):**
+> - **Missing Callback Registry Key:** Added `stateful_lexer` to the callback registry so `enableStatefulLexerChanged` actually fires — the QML switch binding previously never updated reactively (same class as the earlier `checkForUpdatesOnStartupChanged` bug).
+
+> **📦 RPA Parser Hardening (`rpa_parser.py`):**
+> - **Negative-Length Guard:** Malformed archives whose prefix is longer than the declared length no longer read to EOF and write garbage — they are skipped with a warning.
+> - **Non-ASCII Header Tolerance:** Header decode now uses `errors='replace'`, so non-UTF-8 (e.g. CJK-locale) RPA headers no longer abort extraction.
+
+> **🧹 Diagnostics, Path Determinism & Dead Code (`diagnostics.py`, `path_manager.py`, `runtime_hook_template.py`):**
+> - **Diagnostics Write Logging:** Failed diagnostics report writes are now logged instead of silently swallowed.
+> - **Deterministic Project-ID Scan:** Root-directory executable detection now sorts `os.listdir`, preventing cache-key drift when multiple executables exist.
+> - **Removed Dead Background Worker:** Deleted the unused `_rl_background_worker` stub (v4.2.0a fuzzy-matching threading was intentionally deferred; miss logging stays synchronous).
+
+> **📊 Additive Diagnostics & Provenance (`diagnostics.py`, `saving.py`):**
+> - **Extended Diagnostic Reporting:** Added `total_normalized_wrapper`, `provenance` (engine/model/stage), `unchanged_reasons`, and per-kind `alias_kinds` additively to diagnostic JSON reports without mutating or removing any legacy keys.
+
+> **📜 Third-Party Attribution (`README.md`, `Main.qml`, `AGENTS.md`, `locales/*.json`):**
+> - Added a **Third-Party Components** table to the README (llama.cpp, PyQt6/Qt, unrpa, rpycdec, rich) with each project's license and what it is used for, and a credit line under the Local LLM panel (`local_llm_credit`, 9 languages). llama.cpp is MIT and RenLocalizer is GPL-3.0, which are compatible; the binary is not shipped with the release, so MIT's notice requirement is not triggered today — AGENTS.md records that bundling it later would require including the MIT text.
+
 #### [2.8.16] - 2026-09-13
 
 > **Runtime Dictionary Parity, False-Positive Conflict Elimination & Comprehensive Multi-Language Font Normalization**

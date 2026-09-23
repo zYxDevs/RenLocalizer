@@ -96,6 +96,13 @@ class ContextNode:
     name: str = ""
 
 
+#: Escaped brackets/braces (\[ \] \{ \}) render as decoration around the words;
+#: dropping them leaves the sentence the heuristics should actually judge.
+_RENPY_ESCAPED_MARKUP_RE = re.compile(r'\\[\[\]{}]')
+#: Other Ren'Py escapes (\" \' \\) render as the character itself.
+_RENPY_ESCAPED_LITERAL_RE = re.compile(r'\\(["\'\\])')
+
+
 class RenPyParser:
     def __init__(self, config_manager=None):
         self.logger = logging.getLogger(__name__)
@@ -237,13 +244,21 @@ class RenPyParser:
 
         _dialogue_speaker_name = (
             r'(?!(?:textbutton|text|label|tooltip|screen|menu|scene|show|hide|call|jump|'
-            r'python|init|define|default|style|image|caption|frame|transform)\b)'
+            r'python|init|define|default|style|image|caption|frame|transform|'
+            r'style_prefix|style_suffix|use|has|add|key|null|hotspot|hotbar|'
+            r'viewport|vpgrid|vbox|hbox|grid|fixed|side|window|button|bar|vbar|'
+            r'drag|draggroup|mousearea|timer|dismiss|on|action|variant|id|'
+            r'text_style|size_group|selected|sensitive|hovered|unhovered|voice|play|stop|queue)\b)'
             r'[A-Za-z_][\w\.]*'
         )
         _dialogue_attr_token = (
             r'(?:@\s*)?-?(?!(?:at|as|behind|onlayer|with|zorder|show|hide|scene|call|jump|'
             r'return|play|stop|queue|pause|python|screen|menu|textbutton|text|label|tooltip|'
-            r'window|frame|transform|define|default|style|image|caption)\b)[A-Za-z_][\w-]*'
+            r'window|frame|transform|define|default|style|image|caption|'
+            r'style_prefix|style_suffix|use|has|add|key|null|hotspot|hotbar|'
+            r'viewport|vpgrid|vbox|hbox|grid|fixed|side|button|bar|vbar|'
+            r'drag|draggroup|mousearea|timer|dismiss|on|action|variant|id|'
+            r'text_style|size_group|selected|sensitive|hovered|unhovered|voice)\b)[A-Za-z_][\w-]*'
         )
         _dialogue_attr_tail = rf'(?:\s+{_dialogue_attr_token})*'
         _dialogue_speaker_or_quoted = (
@@ -969,20 +984,21 @@ class RenPyParser:
                 # text_value is already unescaped — double-decoding corrupts it.
                 if raw_text:
                     canonical = self._safe_unescape(canonical)
-                # Use canonical for deduplication to collapse "Text" and "Text\n" and "Text"
-                # But keep original context for reconstruction if needed
-                key = (canonical, entry.get('character', ''), tuple(ctx))
+                line_num = entry.get('line_number', 0)
+                text_type = entry.get('text_type') or entry.get('type', '')
+                is_dialogue = bool(entry.get('character')) or (text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue'))
+                key = (canonical, entry.get('character', ''), tuple(ctx), line_num if is_dialogue else 0)
                 
-                # Check if we already have this text in this context (ignore line number differences)
+                # Check if we already have this text in this context (for dialogue, preserve distinct line numbers)
                 if key not in seen_texts:
                     # Route through _record_entry for text_type resolution and
                     # user-configurable type filtering (_should_translate_text).
                     filtered_entry = self._record_entry(
                         text=text_value,
                         raw_text=entry.get('raw_text'),
-                        line_number=entry.get('line_number', 0),
+                        line_number=line_num,
                         context_line=entry.get('context_line', ''),
-                        text_type=entry.get('text_type') or entry.get('type', ''),
+                        text_type=text_type,
                         context_path=list(ctx),
                         character=entry.get('character', ''),
                         file_path=str(file_path),
@@ -1022,7 +1038,8 @@ class RenPyParser:
                 canonical = canonical.replace('\r\n', '\n').replace('\r', '\n')
                 if raw_txt:
                     canonical = self._safe_unescape(canonical)
-                key = (canonical, token.character or '', tuple(ctx))
+                is_dialogue = bool(token.character) or (token.text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue'))
+                key = (canonical, token.character or '', tuple(ctx), token.line_number or 0 if is_dialogue else 0)
                 if key not in seen_texts:
                     entry = self._record_entry(
                         text=token.text,
@@ -1064,14 +1081,16 @@ class RenPyParser:
                     if len(character) >= 2 and character[0] == character[-1] and character[0] in ('"', "'"):
                         character = character[1:-1]
                     canonical_text = self._safe_unescape(text_value)
-                    key = (canonical_text, character, tuple(ctx))
+                    tok_type = token.text_type or 'dialogue'
+                    is_dialogue = bool(character) or (tok_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue'))
+                    key = (canonical_text, character, tuple(ctx), token.line_number or 0 if is_dialogue else 0)
                     if key not in seen_texts:
                         entry = self._record_entry(
                             text=text_value,
                             raw_text=text_value,
                             line_number=token.line_number or 0,
                             context_line=token.raw_line,
-                            text_type=token.text_type or 'dialogue',
+                            text_type=tok_type,
                             context_path=list(ctx),
                             character=character,
                             file_path=str(file_path),
@@ -1084,7 +1103,12 @@ class RenPyParser:
 
         # 2. Regex ile context-aware extraction (UI, screen, python _() fonksiyonları)
         context_stack: List[ContextNode] = []
-        
+
+        # A dialogue string may continue on the next physical line; merge those
+        # into one logical line first, otherwise the opening line matches no
+        # pattern and the whole line of dialogue is lost.
+        lines = self._join_line_spanning_strings(lines)
+
         for idx, raw_line in enumerate(lines):
             if not raw_line or raw_line.isspace():
                 continue
@@ -1129,6 +1153,9 @@ class RenPyParser:
                 # the nested-paren menu pattern on colon-less lines can
                 # backtrack exponentially (12_shop.rpy:120). Skip cheaply.
                 if descriptor.get('type') == 'menu' and ':' not in raw_line:
+                    continue
+                # Ren'Py Screen Guard: Character dialogues can NEVER occur inside screen or style definitions
+                if descriptor.get('type') == 'dialogue' and any(p.lower().startswith(('screen:', 'style:')) for p in current_path):
                     continue
                 match = descriptor['regex'].match(raw_line)
                 if not match:
@@ -1183,14 +1210,16 @@ class RenPyParser:
                 for quote in quotes:
                     # preserve both raw and unescaped variants for exact matching and ID generation
                     raw, text = self._extract_string_raw_and_unescaped(quote, start_line=idx, lines=lines)
-                    key = (text, character, tuple(current_path))
-                    
-                    if key in seen_texts:
-                        continue
                     
                     text_type = descriptor.get('type') or self.determine_text_type(
                         text, stripped_line, current_path
                     )
+                    
+                    is_dialogue = bool(character) or (text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue'))
+                    key = (text, character, tuple(current_path), idx + 1 if is_dialogue else 0)
+                    
+                    if key in seen_texts:
+                        continue
                     
                     entry = self._record_entry(
                         text=text,
@@ -1835,6 +1864,14 @@ class RenPyParser:
                 i += 2
                 continue
 
+            # `[[` and `{{` escape a literal bracket/brace: emit one and move on,
+            # otherwise the words behind the escape are read as an interpolation
+            # and the whole sentence disappears from the visible text.
+            if char in ('{', '[') and i + 1 < len(text) and text[i + 1] == char:
+                output.append(char)
+                i += 2
+                continue
+
             if char in ('{', '['):
                 close_char = '}' if char == '{' else ']'
                 end_idx = self._find_balanced_markup_end(text, i + 1, close_char)
@@ -2265,6 +2302,91 @@ class RenPyParser:
             raise IOError(f"Cannot read file: {file_path}")
         return text.splitlines()
 
+    #: A wrapped string is joined from at most this many physical lines; a
+    #: runaway scan on a malformed file would otherwise swallow the script.
+    MAX_STRING_CONTINUATION_LINES = 20
+
+    @staticmethod
+    def _has_unterminated_string(line: str) -> bool:
+        """True when a quote opens on *line* and never closes on it.
+
+        Ren'Py allows a plain string to continue on the next physical line::
+
+            ply "a long line that continues
+                on the next physical line."
+
+        and its lexer reads that as one string, collapsing the newline and the
+        continuation's indentation into a single space. Triple-quoted blocks
+        keep their existing, dedicated handling.
+        """
+        if '"""' in line or "'''" in line:
+            return False
+
+        quote = None
+        escaped = False
+        for char in line:
+            if escaped:
+                escaped = False
+                continue
+            if char == '\\':
+                escaped = True
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                continue
+            if char == '#':
+                return False  # a comment cannot open a string
+            if char == '"':
+                # Only a double quote opens a joinable string: an apostrophe in
+                # ordinary prose ("don't", "Turkish'ye") is not a string start,
+                # and treating it as one merges unrelated lines.
+                quote = char
+        return quote is not None
+
+    def _join_line_spanning_strings(self, lines: List[str]) -> List[str]:
+        """Merges strings that continue on the following physical lines.
+
+        Consumed lines are blanked instead of removed so every entry keeps the
+        line number it has in the file, and the join uses a single space to
+        match what the Ren'Py lexer produces.
+        """
+        merged = list(lines)
+        index = 0
+        in_triple_block = False
+        while index < len(merged):
+            line = merged[index]
+            # Docstrings and other triple-quoted blocks span lines by design;
+            # joining inside them would corrupt the surrounding code.
+            if line.count('\"\"\"') % 2 or line.count("'''") % 2:
+                in_triple_block = not in_triple_block
+                index += 1
+                continue
+            if in_triple_block or not line or not self._has_unterminated_string(line):
+                index += 1
+                continue
+
+            cursor = index + 1
+            limit = index + self.MAX_STRING_CONTINUATION_LINES
+            joined = line
+            closed = False
+            while cursor < len(merged) and cursor <= limit:
+                joined = joined.rstrip() + " " + merged[cursor].strip()
+                merged[cursor] = ""
+                cursor += 1
+                if not self._has_unterminated_string(joined):
+                    closed = True
+                    break
+
+            if closed:
+                merged[index] = joined
+            else:
+                # The closing quote never arrived: restore the untouched lines
+                # so a malformed file behaves exactly as it did before.
+                merged[index:cursor] = lines[index:cursor]
+            index = cursor
+        return merged
+
     def _calculate_indent(self, line: str) -> int:
         expanded = line.replace('\t', '    ')
         return len(expanded) - len(expanded.lstrip(' '))
@@ -2316,6 +2438,9 @@ class RenPyParser:
         file_path: str = '',
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         for descriptor in self.multiline_registry:
+            # Ren'Py Screen Guard: Character dialogues can NEVER occur inside screen or style definitions
+            if descriptor.get('type') == 'dialogue' and any(p.lower().startswith(('screen:', 'style:')) for p in context_path):
+                continue
             match = descriptor['regex'].match(raw_line)
             if not match:
                 continue
@@ -2499,7 +2624,8 @@ class RenPyParser:
             if any(ctx.startswith('screen') for ctx in lowered_ctx):
                 resolved_type = 'ui'
             elif any(ctx.startswith('menu') for ctx in lowered_ctx):
-                resolved_type = 'menu'
+                if not character and resolved_type in ('unknown', ''):
+                    resolved_type = 'menu'
 
         # Apply user-configurable type filters (e.g. translate_ui)
         if not self._should_translate_text(text, resolved_type):
@@ -2757,6 +2883,27 @@ class RenPyParser:
         # Optimization: Prevent regex engine freeze (ReDoS) on massive strings
         if not text or len(text) > 4096:
             return False
+
+        # Ren'Py writes a literal bracket/brace as an escape: the menu choice
+        # "\\[Sleep until the next morning\\]" is plain display text, not an
+        # interpolation. The heuristics below read markup, path and symbol
+        # syntax, so they must see the words it renders as — otherwise the
+        # backslash looks like a path separator, the brackets look like a
+        # variable, and the entry is dropped before it is ever translated
+        # (309 such menu choices in FunTanariZ 1.12 alone).
+        if "\\" in text:
+            text = _RENPY_ESCAPED_MARKUP_RE.sub("", text)
+            text = _RENPY_ESCAPED_LITERAL_RE.sub(r"\1", text)
+            if not text.strip():
+                return False
+        # The same label reaches us as "[[Sleep until the next morning]" once the
+        # extractor normalises \[ to Ren'Py's doubled form. Drop the escape marker
+        # so the heuristics below judge the words rather than mistaking the whole
+        # sentence for a [variable].
+        if "[[" in text or "{{" in text:
+            text = text.replace("[[", "").replace("{{", "")
+            if not text.strip():
+                return False
         if self._is_standard_renpy_ui_text(text):
             return True
             
@@ -2837,9 +2984,17 @@ class RenPyParser:
             # ALWAYS reject if contains technical markers
             if any(c in inner for c in '._=' ) or any(c.isdigit() for c in inner):
                 return False  # It's a technical placeholder
-            # Multiple words likely technical (command.param, function args, etc)
+            # Several plain words cannot be a Ren'Py interpolation: a variable
+            # name holds no spaces, and an expression would carry an operator or
+            # a call. Menu labels written as "\[Sleep until the next morning\]"
+            # reach us unescaped and land here, so treating multi-word content as
+            # technical silently dropped every one of them (309 in FunTanariZ
+            # 1.12 alone). Expressions keep being rejected by the marker check
+            # above plus the operator check here.
             if len(inner.split()) > 1:
-                return False
+                if any(c in inner for c in '+*/%(),<>|&'):
+                    return False  # looks like an expression, e.g. [a + b]
+                return True  # a phrase the player reads
             # Single word: only reject if it looks like English variable/keyword
             # (not Cyrillic, CJK, or other user language text)
             if not re.search(r'[а-яА-ЯёЁ\u4e00-\u9fff\u3040-\u30ff\u0600-\u06ff]', inner):
@@ -3050,9 +3205,11 @@ class RenPyParser:
         if '=' in _no_tags_for_param and re.search(r'\b(size|color|font|outlines|xalign|yalign|xpos|ypos|style|textalign)\s*=', _no_tags_for_param, re.IGNORECASE):
             return False
         
-        # v2.7.2: Skip purely technical snake_case strings that are definitely IDs
-        # e.g., "game_state", "player_name", "bg_forest" — always technical identifiers
-        if text_strip.islower() and '_' in text_strip and ' ' not in text_strip:
+        # v2.7.2 / v2.8.17: Skip technical identifier strings that are snake_case
+        # or Mixed_Case identifiers with underscores and no spaces.
+        # e.g., "game_state", "player_name", "bg_forest", "u2_Fire_And_Ice",
+        # "alt_K_RETURN" — always code identifiers, never translatable text.
+        if '_' in text_strip and ' ' not in text_strip and re.match(r'^[A-Za-z0-9_]+$', text_strip):
             return False
 
         # 4. Reject NVL mode technical commands
@@ -3073,16 +3230,22 @@ class RenPyParser:
         context_line: str = '',
         context_path: Optional[List[str]] = None,
     ) -> str:
+        if context_line:
+            if self.char_dialog_re.match(context_line):
+                return 'dialogue'
+            if self.menu_choice_re.match(context_line):
+                return 'menu'
+
         if context_path:
             lowered = [ctx.lower() for ctx in context_path]
-            if any(ctx.startswith('menu') for ctx in lowered):
-                return 'menu'
             if any(ctx.startswith('screen') for ctx in lowered):
                 return 'ui'
             if any(ctx.startswith('python') for ctx in lowered):
                 return 'renpy_func'
             if any(ctx.startswith('label') for ctx in lowered):
                 return 'dialogue'
+            if any(ctx.startswith('menu') for ctx in lowered):
+                return 'menu'
 
         if context_line:
             lowered_line = context_line.lower()
@@ -3658,7 +3821,31 @@ class RenPyParser:
         for block_start, block_code in python_blocks:
             try:
                 tree = python_ast.parse(block_code)
-                
+
+                # v2.8.17: Collect strings that must NOT be translated:
+                # 1) module/function/class docstrings,
+                # 2) 2nd-arg attribute-name strings of hasattr/getattr/setattr/delattr,
+                # 3) subscript keys (store['var'], d['key']).
+                # These are code-level identifiers, never user-facing dialogue.
+                ignored_strings: Set[str] = set()
+                for _node in python_ast.walk(tree):
+                    if isinstance(_node, (python_ast.Module, python_ast.FunctionDef,
+                                          python_ast.AsyncFunctionDef, python_ast.ClassDef)):
+                        _doc = python_ast.get_docstring(_node, clean=False)
+                        if _doc:
+                            ignored_strings.add(_doc)
+                    elif isinstance(_node, python_ast.Call):
+                        _fn = _node.func
+                        if isinstance(_fn, python_ast.Name) and _fn.id in ('hasattr', 'getattr', 'setattr', 'delattr'):
+                            if len(_node.args) >= 2:
+                                _arg = _node.args[1]
+                                if isinstance(_arg, python_ast.Constant) and isinstance(_arg.value, str):
+                                    ignored_strings.add(_arg.value)
+                    elif isinstance(_node, python_ast.Subscript):
+                        _sl = _node.slice
+                        if isinstance(_sl, python_ast.Constant) and isinstance(_sl.value, str):
+                            ignored_strings.add(_sl.value)
+
                 # AST visitor ile string'leri çıkar
                 def add_entry(text: str, lineno: int, text_type: str = 'deep_scan_ast'):
                     if text in seen_texts:
@@ -3666,6 +3853,14 @@ class RenPyParser:
                     if len(text.strip()) < 3:
                         return
                     if not self.is_meaningful_text(text):
+                        return
+
+                    # v2.8.17: Skip code identifiers, docstrings, and Sphinx directives.
+                    if text in ignored_strings:
+                        return
+                    if ':doc:' in text or re.match(r'^\s*:(?:doc|param|return|type|rtype|class|func|var)\b', text):
+                        return
+                    if '_' in text and ' ' not in text and re.match(r'^[A-Za-z0-9_]+$', text):
                         return
                     
                     # Filter technical strings using DeepVariableAnalyzer

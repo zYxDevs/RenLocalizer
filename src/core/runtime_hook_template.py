@@ -1090,19 +1090,6 @@ init -999 python:
             return text
     
     # =========================================================================
-    # BACKGROUND WORKER (Self-Healing via Fuzzy Matching)
-    # =========================================================================
-    # TODO: v4.2.0a — Threading module to be added separately
-    #  This avoids GIL blocking and allows RapidFuzz fuzzy matching
-    #  to run without freezing the main game loop.
-    #
-    # For now: simplified miss logging without async candidate generation
-    
-    def _rl_background_worker():
-        """Background worker thread (placeholder for v4.2.0a)."""
-        pass  # Threading implementation in v4.2.0a update
-    
-    # =========================================================================
     # SCREEN HARVESTING (Iterative Traversal, No Recursion)
     # =========================================================================
     # Automatically discovers and translates UI text in screens that bypass
@@ -1330,7 +1317,7 @@ init -999 python:
             return
         try:
             lang = _rl_get_active_language()
-            log_dir = _rl_os.path.join(config.gamedir, "tl", lang, "diagnostics")
+            log_dir = _rl_os.path.join(config.gamedir, "tl", ".diagnostics", lang)
             _rl_os.makedirs(log_dir, exist_ok=True)
             log_file = _rl_os.path.join(log_dir, "runtime_missed_strings.jsonl")
             stripped = text.strip()

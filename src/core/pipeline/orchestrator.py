@@ -27,8 +27,14 @@ from src.core.translator import (
     GoogleTranslator,
     DeepLTranslator,
     LibreTranslateTranslator,
+    BingTranslator,
 )
-from src.core.ai_translator import OpenAITranslator, GeminiTranslator, LocalLLMTranslator
+from src.core.ai_translator import (
+    OpenAITranslator,
+    GeminiTranslator,
+    LocalLLMTranslator,
+    profile_prefers_single_segment as _profile_prefers_single_segment,
+)
 from src.core.output_formatter import RenPyOutputFormatter
 from src.core.diagnostics import DiagnosticReport
 
@@ -54,7 +60,7 @@ from .extraction import (
     run_extraction, cleanup_legacy_mod_files,
     make_source_translatable, escape_rpy_string,
     is_nontranslatable_identifier_entry,
-    generate_all_strings_file, generate_native_tlid_content,
+    generate_all_strings_file, generate_native_tlid_content, merge_tl_content,
     reopen_stale_tl_entries, collect_coverage_warnings,
     audit_image_only_ui, audit_compiled_only_scripts, audit_dynamic_ui_runtime,
 )
@@ -65,6 +71,10 @@ from .translating import (
     sanitize_translation_for_output as _sanitize,
     validate_placeholders, extract_validation_placeholders,
     should_retry_unchanged_core_ui,
+    is_sentence_shaped_natural_language,
+    should_retry_unchanged,
+    retry_unchanged_candidate,
+    normalize_outer_color_wrapper,
     get_requested_translation_batch_size, get_effective_translation_batch_size,
     emit_batch_size_cap_notice_if_needed,
     execute_single_request_with_retry_mode,
@@ -194,6 +204,9 @@ class TranslationPipeline(QObject):
 
     def _should_retry_unchanged_core_ui(self, original_text):
         return should_retry_unchanged_core_ui(original_text)
+
+    def _should_retry_unchanged(self, original_text):
+        return should_retry_unchanged(original_text)
 
     def _get_requested_translation_batch_size(self):
         return get_requested_translation_batch_size(self.engine, self.config)
@@ -1567,14 +1580,27 @@ class TranslationPipeline(QObject):
                     self.log_message.emit('info', f"Native TLID: {len(self._native_ui_entries)} UI entries reserved for runtime hook translation.")
 
             file_groups = {}
-            seen_texts = set()
-            for t in existing_global_strings:
-                seen_texts.add(t)
+            seen_texts = set(existing_global_strings)
+            seen_dialogue_locs = set()
 
             for entry in source_texts:
                 text = entry.get('text', '')
-                if not text or text in seen_texts:
+                if not text:
                     continue
+                who = (entry.get('character') or '').strip()
+                text_type = entry.get('text_type', '')
+                is_dialogue = bool(who) or text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue')
+
+                if use_native and is_dialogue:
+                    loc_key = (entry.get('file_path', ''), entry.get('line_number', 0), text)
+                    if loc_key in seen_dialogue_locs:
+                        continue
+                    seen_dialogue_locs.add(loc_key)
+                else:
+                    if text in seen_texts:
+                        continue
+                    seen_texts.add(text)
+
                 file_path = entry.get('file_path', '')
                 try:
                     if game_dir in file_path:
@@ -1592,13 +1618,18 @@ class TranslationPipeline(QObject):
                 if rel_path not in file_groups:
                     file_groups[rel_path] = []
                 file_groups[rel_path].append(entry)
-                seen_texts.add(text)
 
             if not file_groups:
                 self.log_message.emit("info", "No new strings to generate for translation files.")
                 return True
 
             self.log_message.emit("info", f"Generating {len(file_groups)} separate translation files for {renpy_lang}...")
+            # Ren'Py keys `old "..."` globally, so one shared set must span every
+            # generated file (seeded with what is already on disk). Native mode
+            # can demote dialogue into string entries per file, which happens
+            # after the dedup above — without this, the same shout line in two
+            # scripts crashes the game on startup.
+            shared_string_texts = set(existing_global_strings)
             generated_count = 0
             total_entries_count = 0
 
@@ -1616,6 +1647,7 @@ class TranslationPipeline(QObject):
                             translation_manager=self.translation_manager,
                             config=self.config,
                             lang_name=renpy_lang,
+                            seen_string_texts=shared_string_texts,
                         )
                     else:
                         content = generate_all_strings_file(
@@ -1634,27 +1666,17 @@ class TranslationPipeline(QObject):
                     full_path = os.path.normpath(os.path.join(tl_dir, rel_path))
                     os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
-                    temp_path = full_path + '.tmp'
-                    with open(temp_path, 'w', encoding='utf-8-sig', newline='\n') as f:
-                        f.write(content)
-                        f.flush()
-                        os.fsync(f.fileno())
-
                     if os.path.exists(full_path):
-                        translate_start = content.find(f'translate {renpy_lang} strings:')
-                        if translate_start >= 0:
-                            append_block = '\n\n' + content[translate_start:]
-                            try:
-                                with open(full_path, 'a', encoding='utf-8-sig', newline='\n') as fa:
-                                    fa.write(append_block)
-                                os.remove(temp_path)
-                            except Exception as _append_err:
-                                self.logger.warning(f"Append failed for {rel_path}, falling back to replace: {_append_err}")
-                                os.replace(temp_path, full_path)
-                        else:
-                            os.remove(temp_path)
+                        try:
+                            with open(full_path, 'r', encoding='utf-8-sig', errors='replace') as ef:
+                                existing_content = ef.read()
+                            merged_content = merge_tl_content(existing_content, content, renpy_lang)
+                            save_text_safely(Path(full_path), merged_content, encoding='utf-8-sig', newline='\n')
+                        except Exception as _merge_err:
+                            self.logger.warning(f"Merge failed for {rel_path}: {_merge_err}")
+                            save_text_safely(Path(full_path), content, encoding='utf-8-sig', newline='\n')
                     else:
-                        os.rename(temp_path, full_path)
+                        save_text_safely(Path(full_path), content, encoding='utf-8-sig', newline='\n')
 
                     generated_count += 1
                     total_entries_count += len(entries)
@@ -1701,6 +1723,12 @@ class TranslationPipeline(QObject):
         translations = {}
         self._last_atomic_segments = {}
         formatter = RenPyOutputFormatter()
+        try:
+            _engine_val = getattr(self.engine, 'value', str(self.engine))
+            _model_val = getattr(getattr(self.config, 'api_keys', None), 'openai_model', '')
+            self.diagnostic_report.set_provenance(engine=_engine_val, model=_model_val)
+        except Exception:
+            pass
 
         filtered_entries: List[TranslationEntry] = []
         for entry in entries:
@@ -1730,8 +1758,19 @@ class TranslationPipeline(QObject):
         batch_size = self._get_effective_translation_batch_size()
 
         if self.engine in (TranslationEngine.OPENAI, TranslationEngine.GEMINI, TranslationEngine.LOCAL_LLM):
-            self.log_message.emit("debug", f"AI engine detected, using batch size: {batch_size}")
-            if batch_size > 1000:
+            _ai_batch_format = str(
+                getattr(self.config.translation_settings, 'ai_batch_format', 'scene') or ''
+            ).strip().lower()
+            _single_mode = _ai_batch_format == 'single' or _profile_prefers_single_segment(self.config)
+            if _single_mode:
+                # Batch size is irrelevant here: every line is its own request.
+                self.log_message.emit("info", self.config.get_log_text(
+                    'log_ai_single_segment_mode',
+                    'Single-segment mode: each line is sent as its own request (no batching, no neighbouring-line context).',
+                ))
+            else:
+                self.log_message.emit("debug", f"AI engine detected, using batch size: {batch_size}")
+            if not _single_mode and batch_size > 1000:
                 self.log_message.emit("info", self.config.get_log_text(
                     'log_ai_batch_large_notice',
                     'Large AI batch size in use ({batch}). This may increase token usage, latency, or API failure risk.',
@@ -1884,6 +1923,19 @@ class TranslationPipeline(QObject):
             )
             t.status_callback = self.log_message.emit
             self.translation_manager.add_translator(TranslationEngine.LIBRETRANSLATE, t)
+
+        if self.engine == TranslationEngine.BING and self.engine not in self.translation_manager.translators:
+            t = BingTranslator(
+                proxy_manager=getattr(self.translation_manager, "proxy_manager", None),
+                config_manager=self.config,
+            )
+            fallback = self.translation_manager.translators.get(TranslationEngine.GOOGLE)
+            if fallback is None:
+                fallback = GoogleTranslator(proxy_manager=getattr(self.translation_manager, "proxy_manager", None), config_manager=self.config)
+                fallback.status_callback = self.log_message.emit
+            t.set_fallback_translator(fallback)
+            t.status_callback = self.log_message.emit
+            self.translation_manager.add_translator(TranslationEngine.BING, t)
 
         _auto_names_added = 0
         if getattr(self.config.translation_settings, 'auto_protect_character_names', True):
@@ -2247,12 +2299,37 @@ class TranslationPipeline(QObject):
                     if success and restored is not None:
                         retry_recovered = False
                         blocked_reason = None
-                        if restored.strip() == entry.original_text.strip() and self._should_retry_unchanged_core_ui(entry.original_text):
-                            restored, retry_recovered = retry_unchanged_core_ui(loop, request, entry, restored, self.translation_manager)
+                        raw_before_norm = restored
+                        restored = normalize_outer_color_wrapper(entry.original_text, restored)
+                        was_normalized = (restored != raw_before_norm)
+
+                        _orig_clean = (entry.original_text or '').strip()
+                        _rest_clean = (restored or '').strip()
+                        _rest_unquoted = _rest_clean.strip('"`\'“”')
+                        is_exact_unchanged = (_rest_clean == _orig_clean)
+                        is_case_or_quote_unchanged = (
+                            bool(_orig_clean)
+                            and _rest_unquoted.lower() == _orig_clean.lower()
+                            and self._should_retry_unchanged_core_ui(_orig_clean)
+                        )
+                        is_unchanged = is_exact_unchanged or is_case_or_quote_unchanged
+                        should_retry, retry_kind = self._should_retry_unchanged(entry.original_text) if is_unchanged else (False, '')
+                        if is_unchanged and should_retry:
+                            restored, retry_recovered = retry_unchanged_candidate(
+                                loop, request, entry, restored, self.translation_manager, retry_kind=retry_kind
+                            )
+                            norm_retry = normalize_outer_color_wrapper(entry.original_text, restored)
+                            if norm_retry != restored:
+                                was_normalized = True
+                                restored = norm_retry
                             if retry_recovered and self.config and hasattr(self.config, 'glossary') and self.config.glossary:
                                 restored = formatter.apply_glossary(
                                     text=restored, glossary=self.config.glossary, original_text=entry.original_text,
                                 )
+                            elif is_case_or_quote_unchanged and not retry_recovered:
+                                # When a core UI string was returned unchanged (e.g. lowercase 'return' or quoted),
+                                # and retry didn't produce a new translation, keep exact original capitalization.
+                                restored = _orig_clean
 
                         restored, blocked_reason = self._sanitize_translation_for_output(
                             original=entry.original_text, translated=restored,
@@ -2273,25 +2350,37 @@ class TranslationPipeline(QObject):
                                 file_path = entry.file_path
                                 if blocked_reason is not None:
                                     pass
-                                elif retry_recovered:
-                                    self.diagnostic_report.mark_translated(file_path, tid, restored, original_text=entry.original_text)
-                                    self.diagnostic_report.mark_recovered(file_path, tid, 'retry', original_text=entry.original_text, translated_text=restored)
-                                    self._record_translation_guard_event(
-                                        category='recovered_by_retry', file_path=file_path, translation_id=tid,
-                                        original_text=entry.original_text, translated_text=restored,
-                                        detail='core_ui_retry', line_number=entry.line_number,
-                                    )
-                                elif restored == entry.original_text:
-                                    unchanged_reason = 'unchanged_core_ui' if self._should_retry_unchanged_core_ui(entry.original_text) else None
-                                    self.diagnostic_report.mark_unchanged(file_path, tid, original_text=entry.original_text, reason=unchanged_reason)
-                                    if unchanged_reason:
+                                else:
+                                    if was_normalized:
+                                        self.diagnostic_report.mark_normalized_wrapper(
+                                            file_path, tid,
+                                            original_text=entry.original_text,
+                                            translated_text=raw_before_norm,
+                                            normalized_text=restored,
+                                        )
+                                        self._record_translation_guard_event(
+                                            category='normalized_wrapper', file_path=file_path, translation_id=tid,
+                                            original_text=entry.original_text, translated_text=restored,
+                                            detail='outer_color_wrapper', line_number=entry.line_number,
+                                        )
+                                    if retry_recovered:
+                                        self.diagnostic_report.mark_translated(file_path, tid, restored, original_text=entry.original_text)
+                                        self.diagnostic_report.mark_recovered(file_path, tid, 'retry', original_text=entry.original_text, translated_text=restored)
+                                        self._record_translation_guard_event(
+                                            category='recovered_by_retry', file_path=file_path, translation_id=tid,
+                                            original_text=entry.original_text, translated_text=restored,
+                                            detail=f'{retry_kind}_retry', line_number=entry.line_number,
+                                        )
+                                    elif restored == entry.original_text:
+                                        unchanged_reason = f'unchanged_{retry_kind}' if retry_kind else 'unchanged_other'
+                                        self.diagnostic_report.mark_unchanged(file_path, tid, original_text=entry.original_text, reason=unchanged_reason)
                                         self._record_translation_guard_event(
                                             category='unchanged_by_engine', file_path=file_path, translation_id=tid,
                                             original_text=entry.original_text, translated_text=restored,
                                             detail=unchanged_reason, line_number=entry.line_number,
                                         )
-                                else:
-                                    self.diagnostic_report.mark_translated(file_path, tid, restored, original_text=entry.original_text)
+                                    else:
+                                        self.diagnostic_report.mark_translated(file_path, tid, restored, original_text=entry.original_text)
                             except Exception:
                                 self.logger.warning("diagnostic mark_translated failed for %s (%s)", tid, file_path)
 
@@ -2315,8 +2404,9 @@ class TranslationPipeline(QObject):
                 if _atomic_segments:
                     _seg_added = 0
                     for orig_seg, tr_seg in _atomic_segments:
+                        norm_tr_seg = normalize_outer_color_wrapper(orig_seg, tr_seg)
                         safe_seg, blocked_reason = self._sanitize_translation_for_output(
-                            original=orig_seg, translated=tr_seg, file_path='strings.json', translation_id=orig_seg,
+                            original=orig_seg, translated=norm_tr_seg, file_path='strings.json', translation_id=orig_seg,
                         )
                         if blocked_reason is not None or safe_seg == orig_seg:
                             continue

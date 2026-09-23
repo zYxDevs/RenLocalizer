@@ -43,3 +43,10 @@ class TestSettingsSanitization:
         """Test empty string input."""
         self.backend.set_gemini_api_key("")
         assert self.config.api_keys.gemini_api_key == ""
+
+    def test_stateful_lexer_callback_fires(self):
+        """The stateful_lexer event must be registered so its callback fires."""
+        calls = []
+        self.backend.on("stateful_lexer", lambda: calls.append(True))
+        self.backend.set_enable_stateful_lexer(True)
+        assert calls == [True]

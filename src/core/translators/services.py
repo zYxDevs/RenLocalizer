@@ -9,12 +9,13 @@ import aiohttp
 import json
 import logging
 import os
+import random
 import re
 import time
 import urllib.parse
 from typing import Dict, List, Optional, Tuple, Callable
 
-from src.core.constants import USER_AGENTS
+from src.core.constants import USER_AGENTS, BING_EDGE_TRANSLATE_ENDPOINT
 from src.core.exceptions import (
     RateLimitError,
     QuotaExceededError,
@@ -952,3 +953,319 @@ class LibreTranslateTranslator(BaseTranslator):
         }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BingTranslator — Microsoft Edge (Bing) keyless translation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BingTranslator(BaseTranslator):
+    """
+    Keyless Microsoft Translator via the Edge browser's web-translation endpoint.
+
+    Contract (verified live 2026-09-21):
+        POST https://edge.microsoft.com/translate/translatetext
+             ?isEnterpriseClient=false&to=<lang>[&from=<lang>]&textType=html
+        body: JSON array of strings
+        resp: [{"translations": [{"text": "...", "to": "tr"}], "detectedLanguage": {...}}, ...]
+
+    No token, cookie or API key is involved (the former `/translate/auth` JWT flow
+    was retired by Microsoft in August 2026). Requests are sent as plain text
+    with the pipeline's `⟦…⟧` placeholder tokens left raw: the service passes
+    them through untouched, whereas HTML mode with `<span class="notranslate">`
+    swallows neighbouring words into the span (verified live). Integrity is
+    still validated and repaired after the call.
+    The request family is fully independent from Google's, so this engine keeps
+    working while Google's endpoints are IP-throttled; on hard failure it
+    delegates the same (token-protected) requests to `fallback_translator`.
+    """
+
+    MAX_ITEMS_PER_REQUEST = 100      # observed: 120 items accepted; keep margin
+    MAX_CHARS_PER_REQUEST = 40_000   # service rejects ~50k+ with HTTP 400
+    MAX_RETRIES = 3
+    RETRY_DELAYS = [2.0, 4.0, 8.0]
+    CONCURRENT_CHUNKS = 3
+
+    # RenLocalizer / ISO codes -> Microsoft Translator codes
+    _LANG_MAP = {
+        "zh": "zh-Hans", "zh-cn": "zh-Hans", "zh-hans": "zh-Hans",
+        "zh-tw": "zh-Hant", "zh-hk": "zh-Hant", "zh-hant": "zh-Hant",
+        "pt": "pt", "pt-br": "pt", "pt-pt": "pt-pt",
+        "no": "nb", "nb": "nb",
+        "sr": "sr-Cyrl", "sr-latn": "sr-Latn",
+        "tl": "fil", "fil": "fil",
+        "iw": "he", "he": "he",
+        "jw": "jv", "jv": "jv",
+        "mn": "mn-Cyrl",
+        "tlh": "tlh-Latn",
+    }
+
+    def __init__(self, proxy_manager=None, config_manager=None, **kwargs):
+        super().__init__(proxy_manager, config_manager)
+        self.logger = logging.getLogger(__name__)
+        self._engine = TranslationEngine.BING
+        self.endpoint = kwargs.get("endpoint") or BING_EDGE_TRANSLATE_ENDPOINT
+        self._chunk_semaphore: Optional[asyncio.Semaphore] = None
+        # Fallback (Google) is for hard failures only; never for unchanged second opinions.
+        self.fallback_for_unchanged_retry = False
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    @classmethod
+    def _map_lang(cls, lang: str) -> Optional[str]:
+        raw = (lang or "").strip()
+        if not raw or raw.lower() == "auto":
+            return None
+        return cls._LANG_MAP.get(raw.lower(), raw)
+
+    def _build_url(self, src: Optional[str], tgt: str) -> str:
+        params = {"isEnterpriseClient": "false", "to": tgt}
+        if src:
+            params["from"] = src
+        return f"{self.endpoint}?{urllib.parse.urlencode(params)}"
+
+    def _failed(self, req: TranslationRequest, error: str, quota: bool = False) -> TranslationResult:
+        meta = req.metadata if isinstance(req.metadata, dict) else {}
+        return TranslationResult(
+            original_text=meta.get("original_text", req.text),
+            translated_text="",
+            source_lang=req.source_lang,
+            target_lang=req.target_lang,
+            engine=TranslationEngine.BING,
+            success=False,
+            error=error,
+            quota_exceeded=quota,
+            metadata=meta,
+        )
+
+    def _get_chunk_semaphore(self) -> asyncio.Semaphore:
+        if self._chunk_semaphore is None:
+            self._chunk_semaphore = asyncio.Semaphore(self.CONCURRENT_CHUNKS)
+        return self._chunk_semaphore
+
+    # ── public API ───────────────────────────────────────────────────────
+
+    async def translate_single(self, request: TranslationRequest) -> TranslationResult:
+        results = await self.translate_batch([request])
+        return results[0] if results else self._failed(request, "Batch failed")
+
+    async def translate_batch(
+        self, requests: List[TranslationRequest]
+    ) -> List[TranslationResult]:
+        if not requests:
+            return []
+
+        src = self._map_lang(requests[0].source_lang)
+        tgt = self._map_lang(requests[0].target_lang) or "en"
+
+        # Prepare token-protected payload texts (plain text mode, raw ⟦…⟧ tokens)
+        protected_texts: List[str] = []
+        all_placeholders: List[Dict[str, str]] = []
+        for req in requests:
+            meta = req.metadata if isinstance(req.metadata, dict) else {}
+            placeholders = meta.get("placeholders")
+            if meta.get("preprotected") and isinstance(placeholders, dict):
+                protected_text = req.text
+            else:
+                protected_text, placeholders = protect_renpy_syntax(req.text)
+            protected_texts.append(protected_text)
+            all_placeholders.append(placeholders)
+
+        # Chunk by item count and character budget
+        chunks: List[List[int]] = []
+        cur: List[int] = []
+        cur_chars = 0
+        for i, t in enumerate(protected_texts):
+            if cur and (len(cur) >= self.MAX_ITEMS_PER_REQUEST or cur_chars + len(t) > self.MAX_CHARS_PER_REQUEST):
+                chunks.append(cur)
+                cur, cur_chars = [], 0
+            cur.append(i)
+            cur_chars += len(t)
+        if cur:
+            chunks.append(cur)
+
+        raw: List[Optional[str]] = [None] * len(requests)
+        chunk_errors: Dict[int, Tuple[str, bool]] = {}  # request index -> (error, quota)
+
+        async def run_chunk(indices: List[int]) -> None:
+            async with self._get_chunk_semaphore():
+                await self._translate_indices(indices, protected_texts, src, tgt, raw, chunk_errors)
+
+        await asyncio.gather(*(run_chunk(c) for c in chunks))
+
+        # Post-process: restore placeholders, validate integrity
+        results: List[Optional[TranslationResult]] = [None] * len(requests)
+        failed_indices: List[int] = []
+        for i, req in enumerate(requests):
+            translated = raw[i]
+            if translated is None:
+                failed_indices.append(i)
+                continue
+            placeholders = all_placeholders[i]
+            meta = req.metadata if isinstance(req.metadata, dict) else {}
+            restored = restore_renpy_syntax(translated.strip(), placeholders)
+            missing = validate_translation_integrity(restored, placeholders)
+            if missing:
+                injected = inject_missing_placeholders(restored, protected_texts[i], placeholders, missing)
+                if not validate_translation_integrity(injected, placeholders):
+                    restored, missing = injected, []
+            if missing:
+                chunk_errors[i] = ("Placeholder integrity check failed", False)
+                failed_indices.append(i)
+                continue
+            results[i] = TranslationResult(
+                original_text=meta.get("original_text", req.text),
+                translated_text=restored,
+                source_lang=req.source_lang,
+                target_lang=req.target_lang,
+                engine=TranslationEngine.BING,
+                success=True,
+                confidence=0.9,
+                metadata=meta,
+            )
+
+        # Hard failures: delegate to the fallback engine (same token scheme), else report
+        if failed_indices:
+            fallback = getattr(self, "fallback_translator", None) or getattr(self, "_fallback", None)
+            fb_results: List[Optional[TranslationResult]] = [None] * len(failed_indices)
+            if fallback is not None:
+                first_err = chunk_errors.get(failed_indices[0], ("unknown", False))[0]
+                self.emit_log("warning", self._get_text(
+                    "log_bing_fallback",
+                    "[Bing] {count} item(s) failed ({reason}); delegating to fallback engine.",
+                    count=len(failed_indices), reason=first_err,
+                ))
+                try:
+                    fb_out = await fallback.translate_batch([requests[i] for i in failed_indices])
+                    if fb_out and len(fb_out) == len(failed_indices):
+                        fb_results = list(fb_out)
+                except Exception as exc:
+                    self.logger.warning("Bing fallback translator failed: %s", exc)
+            fb_engine = getattr(getattr(fallback, "_engine", None), "value", "fallback")
+            for pos, i in enumerate(failed_indices):
+                fb = fb_results[pos]
+                if fb is not None and fb.success and (fb.translated_text or "").strip():
+                    meta = dict(requests[i].metadata) if isinstance(requests[i].metadata, dict) else {}
+                    meta["fallback_engine"] = fb_engine
+                    results[i] = TranslationResult(
+                        original_text=fb.original_text,
+                        translated_text=fb.translated_text,
+                        source_lang=requests[i].source_lang,
+                        target_lang=requests[i].target_lang,
+                        engine=TranslationEngine.BING,
+                        success=True,
+                        confidence=getattr(fb, "confidence", 0.0),
+                        metadata=meta,
+                    )
+                else:
+                    err, quota = chunk_errors.get(i, ("Bing translation failed", False))
+                    results[i] = self._failed(requests[i], err, quota)
+
+        return results  # type: ignore[return-value]
+
+    async def _translate_indices(
+        self,
+        indices: List[int],
+        texts: List[str],
+        src: Optional[str],
+        tgt: str,
+        raw: List[Optional[str]],
+        chunk_errors: Dict[int, Tuple[str, bool]],
+    ) -> None:
+        """Translates one chunk in place; splits on size errors, retries on 429/network."""
+        payload = [texts[i] for i in indices]
+        url = self._build_url(src, tgt)
+        last_error = "Unknown error"
+        quota = False
+
+        for attempt in range(self.MAX_RETRIES):
+            if self.should_stop_callback and self.should_stop_callback():
+                last_error = "Stopped by user"
+                break
+            try:
+                session = await self._get_session()
+                proxy = None
+                if self.use_proxy and self.proxy_manager:
+                    p = self.proxy_manager.get_next_proxy()
+                    if p:
+                        proxy = p.url
+                headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": random.choice(USER_AGENTS),
+                    "Origin": "https://www.bing.com",
+                    "Referer": "https://www.bing.com/",
+                }
+                async with session.post(
+                    url,
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers=headers,
+                    proxy=proxy,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        if isinstance(data, str):
+                            data = json.loads(data)
+                        if not isinstance(data, list) or len(data) != len(indices):
+                            last_error = "Unexpected response shape"
+                            break
+                        for pos, item in enumerate(data):
+                            try:
+                                raw[indices[pos]] = item["translations"][0]["text"]
+                            except (KeyError, IndexError, TypeError):
+                                chunk_errors[indices[pos]] = ("Missing translation in response", False)
+                        return
+
+                    body = (await resp.text())[:200]
+                    if resp.status == 429:
+                        quota = True
+                        last_error = "Rate limit exceeded (HTTP 429)"
+                        if attempt < self.MAX_RETRIES - 1:
+                            await asyncio.sleep(self.RETRY_DELAYS[attempt])
+                            continue
+                        rl = RateLimitError("Bing rate limit exceeded (HTTP 429)", code=429)
+                        self.emit_log("warning", rl.get_user_friendly_message())
+                        break
+                    if resp.status == 400 and "maximum allowed translation size" in body.lower() and len(indices) > 1:
+                        # Split and retry both halves (also covers oversized single lines gracefully)
+                        mid = len(indices) // 2
+                        await self._translate_indices(indices[:mid], texts, src, tgt, raw, chunk_errors)
+                        await self._translate_indices(indices[mid:], texts, src, tgt, raw, chunk_errors)
+                        return
+                    if resp.status in (400, 401, 403, 404):
+                        # Unsupported language / contract change / blocked — no point retrying
+                        last_error = f"HTTP {resp.status}: {body or 'request rejected'}"
+                        break
+                    last_error = f"HTTP {resp.status}: {body}"
+                    if attempt < self.MAX_RETRIES - 1:
+                        await asyncio.sleep(self.RETRY_DELAYS[attempt])
+                        continue
+                    break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = f"Connection/Request Error: {exc}"
+                if attempt < self.MAX_RETRIES - 1:
+                    await asyncio.sleep(self.RETRY_DELAYS[attempt])
+                    continue
+                break
+
+        self.logger.warning("Bing chunk of %d items failed: %s", len(indices), last_error)
+        for i in indices:
+            if raw[i] is None:
+                chunk_errors[i] = (last_error, quota)
+
+    def get_supported_languages(self) -> Dict[str, str]:
+        return {
+            "en": "English", "tr": "Turkish", "de": "German", "fr": "French",
+            "es": "Spanish", "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+            "uk": "Ukrainian", "pl": "Polish", "cs": "Czech", "nl": "Dutch",
+            "sv": "Swedish", "da": "Danish", "fi": "Finnish", "nb": "Norwegian",
+            "hu": "Hungarian", "ro": "Romanian", "bg": "Bulgarian", "el": "Greek",
+            "ja": "Japanese", "ko": "Korean", "zh-Hans": "Chinese (Simplified)",
+            "zh-Hant": "Chinese (Traditional)", "vi": "Vietnamese", "th": "Thai",
+            "id": "Indonesian", "ms": "Malay", "fil": "Filipino", "hi": "Hindi",
+            "bn": "Bengali", "ar": "Arabic", "fa": "Persian", "he": "Hebrew",
+            "az": "Azerbaijani", "kk": "Kazakh", "uz": "Uzbek", "ka": "Georgian",
+            "hy": "Armenian", "sr-Cyrl": "Serbian", "hr": "Croatian", "sk": "Slovak",
+            "sl": "Slovenian", "lt": "Lithuanian", "lv": "Latvian", "et": "Estonian",
+        }

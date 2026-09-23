@@ -72,6 +72,56 @@ GOOGLE_BATCHEXECUTE_ENDPOINT = (
     "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
 )
 
+# Microsoft Edge web-translation endpoint (Bing engine). Keyless: no token,
+# cookie or API key. Replaced the retired `edge.microsoft.com/translate/auth`
+# JWT flow (404 since Aug 2026). Verified live 2026-09-21: accepts a JSON
+# array of strings, `textType=html` honours <span class="notranslate">,
+# ~50k chars per request is the hard ceiling (HTTP 400 beyond).
+BING_EDGE_TRANSLATE_ENDPOINT = "https://edge.microsoft.com/translate/translatetext"
+
+# ── Built-in GGUF runtime (llama.cpp server) ─────────────────────────────────
+# RenLocalizer can run a user-supplied .gguf model through llama.cpp's
+# OpenAI-compatible server, so no Ollama / LM Studio install is required.
+# The build is PINNED: llama.cpp publishes rolling nightly builds (bNNNNN), and
+# a fixed tag keeps the artifact — and therefore its SHA256 — predictable.
+# GitHub reports a `digest: "sha256:..."` per asset, which is verified after
+# download. Nothing is fetched unless the user explicitly asks for it.
+LLAMACPP_REPO = "ggml-org/llama.cpp"
+LLAMACPP_PINNED_BUILD = "b11120"
+LLAMACPP_RELEASE_API = (
+    "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{build}"
+)
+# Used only when the pinned build no longer carries the needed asset.
+LLAMACPP_RELEASE_LIST_API = (
+    "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30"
+)
+# Seconds to wait for GET /health after launch (large models load slowly).
+LLAMACPP_HEALTH_TIMEOUT = 180.0
+# backend -> platform key -> release asset template.
+# Vulkan is the default: ~30 MB, works on NVIDIA/AMD/Intel without CUDA Toolkit.
+# CUDA is faster on NVIDIA but needs the 400 MB cudart archive as well.
+LLAMACPP_VARIANTS = {
+    "vulkan": {
+        "win-x64": "llama-{build}-bin-win-vulkan-x64.zip",
+        "linux-x64": "llama-{build}-bin-ubuntu-vulkan-x64.tar.gz",
+        "linux-arm64": "llama-{build}-bin-ubuntu-vulkan-arm64.tar.gz",
+    },
+    "cuda": {
+        "win-x64": "llama-{build}-bin-win-cuda-12.4-x64.zip",
+        "win-arm64": "llama-{build}-bin-win-cuda-13.4-arm64.zip",
+        "linux-x64": "llama-{build}-bin-ubuntu-cuda-12.8-x64.tar.gz",
+        "linux-arm64": "llama-{build}-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+    },
+    "cpu": {
+        "win-x64": "llama-{build}-bin-win-cpu-x64.zip",
+        "win-arm64": "llama-{build}-bin-win-cpu-arm64.zip",
+        "linux-x64": "llama-{build}-bin-ubuntu-x64.tar.gz",
+        "linux-arm64": "llama-{build}-bin-ubuntu-arm64.tar.gz",
+        "macos-x64": "llama-{build}-bin-macos-x64.tar.gz",
+        "macos-arm64": "llama-{build}-bin-macos-arm64.tar.gz",
+    },
+}
+
 # User Agents for rotating requests to avoid bot detection
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

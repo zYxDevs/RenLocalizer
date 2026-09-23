@@ -13,7 +13,7 @@ import hashlib
 import json
 import tempfile
 import shutil
-from typing import List, Dict, Optional, Tuple, Any, Union
+from typing import List, Dict, Optional, Set, Tuple, Any, Union
 from pathlib import Path
 
 from .constants import (
@@ -453,7 +453,13 @@ def reopen_stale_tl_entries(tl_files, config, diagnostic_report, record_translat
             if corruption_reason is not None:
                 reason = 'corrupted'
                 detail = corruption_reason
-            elif translated == (entry.original_text or '').strip() and (entry.original_text or '').strip() in CORE_UI_RETRY_STRINGS:
+            elif (
+                (entry.original_text or '').strip() in CORE_UI_RETRY_STRINGS
+                and (
+                    translated == (entry.original_text or '').strip()
+                    or translated.strip('"`\'“”').lower() == (entry.original_text or '').strip().lower()
+                )
+            ):
                 reason = 'unchanged_core_ui'
                 detail = 'unchanged_core_ui'
             else:
@@ -605,9 +611,19 @@ def generate_native_tlid_content(
     translation_manager=None,
     config=None,
     lang_name: str = None,
+    seen_string_texts: Optional[Set[str]] = None,
 ) -> str:
     """
     Generate native TLID format output for dialogues + strings: for UI text.
+
+    ``seen_string_texts`` must be shared across every file of one run (seeded
+    with the ``old "..."`` entries already on disk). Ren'Py keys string
+    translations globally, so emitting the same ``old`` in two files under
+    tl/<lang>/ makes the game refuse to start with "A translation for ...
+    already exists at <other file>". Dialogue lines can be demoted to string
+    entries here (multi-speaker or engine-code speakers), which happens after
+    the pipeline's own global dedup — so this set is the only thing standing
+    between two files and that crash.
     """
     from src.core.output_formatter import RenPyOutputFormatter
 
@@ -621,26 +637,44 @@ def generate_native_tlid_content(
     lines.append("")
 
     seen_tlids: Dict[str, int] = {}
-    seen_texts: set = set()
+    if seen_string_texts is None:
+        seen_string_texts = set()
+    seen_dialogue_keys: set = set()
     entries_added = 0
     skipped = 0
+    cache_by_target_text: Optional[Dict[Tuple[str, str], Any]] = None
 
     dialogue_entries = []
     string_entries = []
 
     for entry in entries:
         text = entry.get('text', '')
-        if not text or formatter._should_skip_translation(text):
+        if not text:
+            continue
+        who = (entry.get('character') or '').strip()
+        text_type = entry.get('text_type', '')
+
+        # Safety net: only filter non-dialogue text with _should_skip_translation.
+        # Spoken character dialogue (who is present) must never be dropped by code pattern filters.
+        if not who and formatter._should_skip_translation(text):
             skipped += 1
             continue
-        if text in seen_texts:
-            continue
-        seen_texts.add(text)
 
-        text_type = entry.get('text_type', '')
-        if text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue'):
+        is_dialogue = bool(who) or text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue')
+
+        if is_dialogue:
+            # For dialogue: deduplicate by exact file + line + text so distinct branches/scenes
+            # sharing the same dialogue line both get native TLID blocks.
+            d_key = (entry.get('file_path', ''), entry.get('line_number', 0), text)
+            if d_key in seen_dialogue_keys:
+                continue
+            seen_dialogue_keys.add(d_key)
             dialogue_entries.append(entry)
         else:
+            # For UI strings: Ren'Py allows each old "..." only once in translate strings:
+            if text in seen_string_texts:
+                continue
+            seen_string_texts.add(text)
             string_entries.append(entry)
 
     if dialogue_entries:
@@ -658,6 +692,9 @@ def generate_native_tlid_content(
                 or len(re.findall(r'\[', who)) >= 2
                 or who.strip('"\'').lower() in RENPY_KEYWORDS_TO_SKIP
             ):
+                if text in seen_string_texts:
+                    continue
+                seen_string_texts.add(text)
                 string_entries.append(entry)
                 continue
 
@@ -724,8 +761,19 @@ def generate_native_tlid_content(
             if translation_manager:
                 api_target = RENPY_TO_API_LANG.get(target_language, target_language)
                 api_source = RENPY_TO_API_LANG.get(source_language, source_language)
-                cache_key = (engine.value, api_source, api_target, text)
+                cache_engine = engine.value if hasattr(engine, 'value') else str(engine or 'google')
+                cache_key = (cache_engine, api_source, api_target, text)
                 cached_res = translation_manager._cache.get(cache_key)
+                if not cached_res:
+                    # Engine/source-agnostic lookup (e.g. auto-detected source or a
+                    # fallback engine). Index is built once; a per-entry scan of the
+                    # cache would be O(entries x cache) on large projects.
+                    if cache_by_target_text is None:
+                        cache_by_target_text = {}
+                        for k, v in translation_manager._cache.items():
+                            if len(k) >= 4:
+                                cache_by_target_text.setdefault((k[2], k[3]), v)
+                    cached_res = cache_by_target_text.get((api_target, text))
                 if cached_res and cached_res.success:
                     cached = escape_rpy_string(cached_res.translated_text)
 
@@ -737,6 +785,60 @@ def generate_native_tlid_content(
             lines.append("")
             entries_added += 1
 
+    if string_entries:
+        lines.append("")
+        lines.append(f"translate {target_lang} strings:")
+        lines.append("")
+
+        for entry in string_entries:
+            text = entry.get('text', '')
+            file_path = entry.get('file_path', '')
+            line_num = entry.get('line_number', 0) or 1
+            character = entry.get('character', '')
+            text_type = entry.get('text_type', '')
+
+            escaped_text = escape_rpy_string(text)
+
+            try:
+                rel_path = os.path.relpath(file_path, game_dir) if file_path else ""
+            except (ValueError, Exception):
+                rel_path = file_path or ""
+
+            comment_parts = [f"{rel_path}:{line_num}"] if rel_path else [f":{line_num}"]
+            if character:
+                comment_parts.append(f"({character})")
+            if text_type and text_type != 'dialogue':
+                comment_parts.append(f"[{text_type}]")
+            if entry.get('is_engine_common'):
+                comment_parts.append('[engine_common]')
+
+            lines.append(f"    # {' '.join(comment_parts)}")
+
+            cached = ""
+            if translation_manager:
+                api_target = RENPY_TO_API_LANG.get(target_language, target_language)
+                api_source = RENPY_TO_API_LANG.get(source_language, source_language)
+                cache_engine = engine.value if hasattr(engine, 'value') else str(engine or 'google')
+                cache_key = (cache_engine, api_source, api_target, text)
+                cached_res = translation_manager._cache.get(cache_key)
+                if not cached_res:
+                    # Engine/source-agnostic lookup (e.g. auto-detected source or a
+                    # fallback engine). Index is built once; a per-entry scan of the
+                    # cache would be O(entries x cache) on large projects.
+                    if cache_by_target_text is None:
+                        cache_by_target_text = {}
+                        for k, v in translation_manager._cache.items():
+                            if len(k) >= 4:
+                                cache_by_target_text.setdefault((k[2], k[3]), v)
+                    cached_res = cache_by_target_text.get((api_target, text))
+                if cached_res and cached_res.success:
+                    cached = escape_rpy_string(cached_res.translated_text)
+
+            lines.append(f'    old "{escaped_text}"')
+            lines.append(f'    new "{cached}"')
+            lines.append("")
+            entries_added += 1
+
     if not entries_added:
         return ""
 
@@ -744,3 +846,148 @@ def generate_native_tlid_content(
         logger.debug("Native TLID: %d technical entries skipped", skipped)
 
     return '\n'.join(lines)
+
+
+def _extract_tl_dialogue_blocks(dialogue_text: str, renpy_lang: str) -> List[Tuple[str, str]]:
+    """Splits dialogue content into individual blocks: (tlid, full_block_text)."""
+    if not dialogue_text.strip():
+        return []
+    pattern = re.compile(rf'^\s*translate\s+{re.escape(renpy_lang)}\s+(\w+)\s*:', re.MULTILINE)
+    matches = list(pattern.finditer(dialogue_text))
+    if not matches:
+        return []
+    blocks = []
+    for idx, match in enumerate(matches):
+        tlid = match.group(1)
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(dialogue_text)
+        block_text = dialogue_text[start:end].strip()
+        if block_text and tlid != 'strings':
+            blocks.append((tlid, block_text))
+    return blocks
+
+
+def _extract_tl_string_entries(strings_text: str) -> List[Tuple[str, str]]:
+    """Splits string body into individual entries: (old_text_raw, full_entry_text)."""
+    if not strings_text.strip():
+        return []
+    lines = strings_text.splitlines()
+    entries = []
+    current_entry_lines: List[str] = []
+    current_old: Optional[str] = None
+    old_re = re.compile(r'^\s*old\s+(?P<q>["\'])(?P<text>(?:(?!(?P=q)).|\\.)*)(?P=q)')
+
+    for line in lines:
+        stripped = line.strip()
+        old_match = old_re.match(stripped)
+        if old_match:
+            current_old = old_match.group('text')
+            current_entry_lines.append(line)
+        elif current_old is not None:
+            current_entry_lines.append(line)
+            if re.match(r'^\s*new\s+(?P<q>["\'])', stripped):
+                entries.append((current_old, '\n'.join(current_entry_lines)))
+                current_entry_lines = []
+                current_old = None
+        else:
+            if stripped:
+                current_entry_lines.append(line)
+
+    if current_old is not None and current_entry_lines:
+        entries.append((current_old, '\n'.join(current_entry_lines)))
+
+    return entries
+
+
+def merge_tl_content(existing_content: str, new_content: str, renpy_lang: str) -> str:
+    """
+    Merge newly generated TL content (dialogue blocks + strings block) into an existing TL file.
+    Ensures dialogue blocks are placed with dialogue, and string entries are placed under strings:
+    without creating duplicate 'translate <lang> strings:' headers, duplicate TLIDs, or duplicate strings.
+    """
+    strings_header = f"translate {renpy_lang} strings:"
+
+    # Strip top comment headers from new_content
+    new_lines = new_content.splitlines()
+    body_lines = []
+    in_header = True
+    for line in new_lines:
+        if in_header and (line.startswith('#') or not line.strip()):
+            continue
+        in_header = False
+        body_lines.append(line)
+    body_text = '\n'.join(body_lines).strip()
+    if not body_text:
+        return existing_content
+
+    # Split new content into dialogue part and strings part
+    new_strings_idx = body_text.find(strings_header)
+    if new_strings_idx >= 0:
+        new_dialogue = body_text[:new_strings_idx].strip()
+        new_strings = body_text[new_strings_idx + len(strings_header):].strip()
+    else:
+        new_dialogue = body_text.strip()
+        new_strings = ""
+
+    # Collect existing TLIDs from existing_content (excluding 'strings')
+    existing_tlids = set(
+        re.findall(rf'^\s*translate\s+{re.escape(renpy_lang)}\s+(\w+)\s*:', existing_content, re.MULTILINE)
+    )
+    existing_tlids.discard('strings')
+
+    # Deduplicate new dialogue blocks: omit blocks whose TLID is already in existing_content
+    new_dialogue_blocks = _extract_tl_dialogue_blocks(new_dialogue, renpy_lang)
+    filtered_dialogue_parts = []
+    seen_new_tlids = set(existing_tlids)
+    for tlid, blk in new_dialogue_blocks:
+        if tlid not in seen_new_tlids:
+            seen_new_tlids.add(tlid)
+            filtered_dialogue_parts.append(blk)
+    filtered_new_dialogue = '\n\n'.join(filtered_dialogue_parts).strip()
+
+    # Collect existing old "..." entries from existing strings section
+    exist_strings_idx = existing_content.find(strings_header)
+    existing_olds: Set[str] = set()
+    if exist_strings_idx >= 0:
+        existing_strings_part = existing_content[exist_strings_idx:]
+    else:
+        existing_strings_part = existing_content
+
+    for m in re.finditer(r'^\s*old\s+(?P<q>["\'])(?P<text>(?:(?!(?P=q)).|\\.)*)(?P=q)', existing_strings_part, re.MULTILINE):
+        existing_olds.add(m.group('text'))
+
+    # Deduplicate new string entries: omit entries whose old text is already in existing_content
+    new_string_entries = _extract_tl_string_entries(new_strings)
+    filtered_string_parts = []
+    seen_new_olds = set(existing_olds)
+    for old_text, entry_text in new_string_entries:
+        if old_text not in seen_new_olds:
+            seen_new_olds.add(old_text)
+            filtered_string_parts.append(entry_text)
+    filtered_new_strings = '\n\n'.join(filtered_string_parts).strip()
+
+    # If no new dialogue or string entries survived deduplication, keep existing content
+    if not filtered_new_dialogue and not filtered_new_strings:
+        return existing_content
+
+    if exist_strings_idx >= 0:
+        before_strings = existing_content[:exist_strings_idx].rstrip()
+        after_strings = existing_content[exist_strings_idx + len(strings_header):].rstrip()
+
+        parts = [before_strings]
+        if filtered_new_dialogue:
+            parts.append(filtered_new_dialogue)
+        parts.append(strings_header)
+        if after_strings.strip():
+            parts.append(after_strings.strip())
+        if filtered_new_strings:
+            parts.append(filtered_new_strings)
+        return '\n\n'.join(parts) + '\n'
+    else:
+        parts = [existing_content.rstrip()]
+        if filtered_new_dialogue:
+            parts.append(filtered_new_dialogue)
+        if filtered_new_strings:
+            parts.append(strings_header)
+            parts.append(filtered_new_strings)
+        return '\n\n'.join(parts) + '\n'

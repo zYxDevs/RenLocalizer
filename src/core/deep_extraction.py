@@ -102,8 +102,9 @@ class DeepVariableAnalyzer:
         if not text:
             return True
         t = text.strip()
-        # URLs, file extensions, and very short tokens are technical
-        if re.search(r'https?://|www\.|\\/|\.|\.(png|jpg|ogg|mp3|rpy|rpyc|json|xml|yaml)$', t, re.IGNORECASE):
+        # URLs, www prefixes, and file extensions are technical. A lone dot is
+        # deliberately not matched, since it would flag every period-ending sentence.
+        if re.search(r'https?://|www\.|\.(png|jpg|ogg|mp3|rpy|rpyc|json|xml|yaml)$', t, re.IGNORECASE):
             return True
         if len(t) <= 2:
             return True

@@ -22,6 +22,7 @@ class TranslationEngine(Enum):
     GEMINI = "gemini"
     LOCAL_LLM = "local_llm"
     LIBRETRANSLATE = "libretranslate"
+    BING = "bing"  # Microsoft Edge web-translation endpoint (keyless)
     CUSTOM = "custom"  # Generic HTTP endpoint (LibreTranslate/Argos/any)
     PSEUDO = "pseudo"  # Pseudo-localization for UI testing
 
@@ -74,6 +75,17 @@ class BaseTranslator(ABC):
             self.enable_parallel_batch = getattr(
                 config_manager.translation_settings, "enable_parallel_batch", True
             )
+        self.fallback_translator: Optional[BaseTranslator] = None
+        self._fallback: Optional[BaseTranslator] = None
+        # Whether the pipeline may ask the fallback engine for a second opinion
+        # when this engine returns a string unchanged. Plain MT engines (Bing)
+        # opt out: their own retry already ran and the fallback is the same class.
+        self.fallback_for_unchanged_retry: bool = True
+
+    def set_fallback_translator(self, fallback: Optional[BaseTranslator]) -> None:
+        """Sets a secondary fallback translator to invoke if primary engine fails."""
+        self.fallback_translator = fallback
+        self._fallback = fallback
 
     def emit_log(self, level: str, message: str):
         """Emits log to both standard logger and UI status callback."""

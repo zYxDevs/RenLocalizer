@@ -286,9 +286,12 @@ def test_generate_strings_json_skips_corrupt_entries_and_adds_hotkey_variants(tm
 
     mapping = json.loads((lang_dir / "strings.json").read_text(encoding="utf-8"))
     mapping = mapping["translations"] if isinstance(mapping, dict) and "translations" in mapping else mapping
-    skipped = json.loads(
-        (lang_dir / "diagnostics" / "strings_json_skipped_corruptions.json").read_text(encoding="utf-8")
+    report_file = (
+        lang_dir.parent / ".diagnostics" / "turkish" / "strings_json_skipped_corruptions.json"
+        if (lang_dir.parent / ".diagnostics" / "turkish" / "strings_json_skipped_corruptions.json").exists()
+        else lang_dir / "diagnostics" / "strings_json_skipped_corruptions.json"
     )
+    skipped = json.loads(report_file.read_text(encoding="utf-8"))
 
     assert mapping["Stats/s"] == "İstatistikler/s"
     assert mapping["Stats [S]"] == "İstatistikler [S]"

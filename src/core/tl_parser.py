@@ -104,21 +104,24 @@ class TLParser:
             re.IGNORECASE
         )
         
-        # old "..." / new "..." for strings format
-        self._old_re = re.compile(r'^\s*old\s+"(.*)"\s*$')
-        self._new_re = re.compile(r'^\s*new\s+"(.*)"\s*$')
+        # old "..." / new "..." for strings format (supports single and double quotes)
+        self._old_re = re.compile(r'^\s*old\s+(?P<quote>["\'])(?P<text>.*)(?P=quote)\s*$')
+        self._new_re = re.compile(r'^\s*new\s+(?P<quote>["\'])(?P<text>.*)(?P=quote)\s*$')
         
+        # Speaker pattern: bare identifier (with optional dot/attributes) or quoted string
+        _speaker_pattern = r'(?P<speaker>[A-Za-z_][\w\.]*(?:\s+[^"\'\n]+)?|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')'
+
         # # character "text" - dialogue orijinal yorum satırı (karakterli)
-        self._dialogue_comment_re = re.compile(r'^\s*#\s*(\w+)\s+"(.*)"\s*$')
+        self._dialogue_comment_re = re.compile(rf'^\s*#\s*{_speaker_pattern}\s+(?P<quote>["\'])(?P<text>.*)(?P=quote)\s*$')
         
         # # "text" - narrator orijinal yorum satırı (karaktersiz)
-        self._narrator_comment_re = re.compile(r'^\s*#\s*"(.*)"\s*$')
+        self._narrator_comment_re = re.compile(r'^\s*#\s*(?P<quote>["\'])(?P<text>(?:(?!(?P=quote)).|\\.)*)(?P=quote)\s*$')
         
         # character "" veya character "text" - dialogue çeviri satırı
-        self._dialogue_line_re = re.compile(r'^\s*(\w+)\s+"(.*)"\s*$')
+        self._dialogue_line_re = re.compile(rf'^\s*{_speaker_pattern}\s+(?P<quote>["\'])(?P<text>.*)(?P=quote)\s*$')
         
         # "" veya "text" - narrator çeviri satırı (karaktersiz)
-        self._narrator_line_re = re.compile(r'^\s*"(.*)"\s*$')
+        self._narrator_line_re = re.compile(r'^\s*(?P<quote>["\'])(?P<text>(?:(?!(?P=quote)).|\\.)*)(?P=quote)\s*$')
         
         # Sadece # path.rpy:123 veya # game/path.rpy:123 formatı - kaynak yorum
         self._source_comment_re = re.compile(r'^\s*#\s*([^:]+:\d+)\s*$')
@@ -317,7 +320,7 @@ class TLParser:
             # STRINGS FORMAT: old "..." / new "..."
             old_match = self._old_re.match(stripped)
             if old_match:
-                old_text = self._unescape_string(old_match.group(1))
+                old_text = self._unescape_string(old_match.group('text'))
                 new_text = ""
                 line_no = i + 1
                 
@@ -334,7 +337,7 @@ class TLParser:
                     next_stripped = lines[i + 1].strip()
                     new_match = self._new_re.match(next_stripped)
                     if new_match:
-                        new_text = self._unescape_string(new_match.group(1))
+                        new_text = self._unescape_string(new_match.group('text'))
                         i += 1
                 
                 if not self.should_skip_text(old_text):
@@ -360,8 +363,8 @@ class TLParser:
                 # Önce karakterli diyalog kontrol et (# gg "Hello")
                 comment_match = self._dialogue_comment_re.match(stripped)
                 if comment_match:
-                    character = comment_match.group(1)
-                    original_text = self._unescape_string(comment_match.group(2))
+                    character = comment_match.group('speaker')
+                    original_text = self._unescape_string(comment_match.group('text'))
                     ctx = [current_block_id] if current_block_id else []
                     
                     # Sonraki satırda karakter "" olmalı
@@ -370,8 +373,8 @@ class TLParser:
                         dialogue_match = self._dialogue_line_re.match(next_stripped)
                         
                         if dialogue_match:
-                            char_name = dialogue_match.group(1)
-                            translated_text = self._unescape_string(dialogue_match.group(2))
+                            char_name = dialogue_match.group('speaker')
+                            translated_text = self._unescape_string(dialogue_match.group('text'))
                             
                             if not self.should_skip_text(original_text):
                                 entry = TranslationEntry(
@@ -395,7 +398,7 @@ class TLParser:
                 # Narrator formatı kontrol et (# "Hello" - karaktersiz)
                 narrator_match = self._narrator_comment_re.match(stripped)
                 if narrator_match:
-                    original_text = self._unescape_string(narrator_match.group(1))
+                    original_text = self._unescape_string(narrator_match.group('text'))
                     ctx = [current_block_id] if current_block_id else []
                     
                     # Sonraki satırda "" olmalı
@@ -404,7 +407,7 @@ class TLParser:
                         narrator_line_match = self._narrator_line_re.match(next_stripped)
                         
                         if narrator_line_match:
-                            translated_text = self._unescape_string(narrator_line_match.group(1))
+                            translated_text = self._unescape_string(narrator_line_match.group('text'))
                             
                             if not self.should_skip_text(original_text):
                                 entry = TranslationEntry(
@@ -449,6 +452,7 @@ class TLParser:
         text = text.replace('\\n', '\n')
         text = text.replace('\\t', '\t')
         text = text.replace('\\"', '"')
+        text = text.replace("\\'", "'")
         text = text.replace('\\\\', '\\')
         
         return text
@@ -560,7 +564,7 @@ class TLParser:
             # STRINGS FORMAT: old "..." / new "..."
             old_match = self._old_re.match(stripped)
             if old_match:
-                old_text = self._unescape_string(old_match.group(1))
+                old_text = self._unescape_string(old_match.group('text'))
                 new_lines.append(line)  # old satırını ekle
                 translation_id = self.make_translation_id(tl_file.file_path, i + 1, old_text, ctx)
                 
@@ -570,7 +574,7 @@ class TLParser:
                     new_match = self._new_re.match(next_stripped)
                     
                     if new_match:
-                        existing_translated = self._unescape_string(new_match.group(1))
+                        existing_translated = self._unescape_string(new_match.group('text'))
                         translated = translations.get(translation_id) or translations.get(old_text)
                         if translated is None:
                             translated = existing_translated
@@ -588,7 +592,7 @@ class TLParser:
             if in_translate_block and block_type == 'dialogue':
                 comment_match = self._dialogue_comment_re.match(stripped)
                 if comment_match and i + 1 < len(lines):
-                    original_text = self._unescape_string(comment_match.group(2))
+                    original_text = self._unescape_string(comment_match.group('text'))
                     new_lines.append(line)  # yorum satırını ekle
                     translation_id = self.make_translation_id(tl_file.file_path, i + 2, original_text, ctx)
 
@@ -597,8 +601,8 @@ class TLParser:
                     dialogue_match = self._dialogue_line_re.match(next_stripped)
                     
                     if dialogue_match:
-                        char_name = dialogue_match.group(1)
-                        existing_translated = self._unescape_string(dialogue_match.group(2))
+                        char_name = dialogue_match.group('speaker')
+                        existing_translated = self._unescape_string(dialogue_match.group('text'))
                         translated = translations.get(translation_id) or translations.get(original_text)
                         if translated is None:
                             translated = existing_translated
@@ -612,7 +616,7 @@ class TLParser:
                 # Narrator format: # "text" ve ""
                 narrator_match = self._narrator_comment_re.match(stripped)
                 if narrator_match and i + 1 < len(lines):
-                    original_text = self._unescape_string(narrator_match.group(1))
+                    original_text = self._unescape_string(narrator_match.group('text'))
                     new_lines.append(line)  # yorum satırını ekle
                     translation_id = self.make_translation_id(tl_file.file_path, i + 2, original_text, ctx)
                     
@@ -621,7 +625,7 @@ class TLParser:
                     narrator_line_match = self._narrator_line_re.match(next_stripped)
                     
                     if narrator_line_match:
-                        existing_translated = self._unescape_string(narrator_line_match.group(1))
+                        existing_translated = self._unescape_string(narrator_line_match.group('text'))
                         translated = translations.get(translation_id) or translations.get(original_text)
                         if translated is None:
                             translated = existing_translated

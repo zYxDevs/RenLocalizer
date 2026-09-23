@@ -6,7 +6,7 @@ Core module for RenLocalizer
 from .parser import RenPyParser
 from .translator import (
     TranslationEngine, TranslationRequest, TranslationResult,
-    BaseTranslator, GoogleTranslator, DeepLTranslator, LibreTranslateTranslator, PseudoTranslator, TranslationManager
+    BaseTranslator, GoogleTranslator, DeepLTranslator, LibreTranslateTranslator, BingTranslator, PseudoTranslator, TranslationManager
 )
 from .proxy_manager import ProxyManager, ProxyInfo
 from .output_formatter import RenPyOutputFormatter
@@ -14,7 +14,7 @@ from .output_formatter import RenPyOutputFormatter
 __all__ = [
     'RenPyParser',
     'TranslationEngine', 'TranslationRequest', 'TranslationResult',
-    'BaseTranslator', 'GoogleTranslator', 'DeepLTranslator', 'LibreTranslateTranslator', 'PseudoTranslator', 'TranslationManager',
+    'BaseTranslator', 'GoogleTranslator', 'DeepLTranslator', 'LibreTranslateTranslator', 'BingTranslator', 'PseudoTranslator', 'TranslationManager',
     'ProxyManager', 'ProxyInfo',
     'RenPyOutputFormatter'
 ]

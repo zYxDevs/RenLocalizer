@@ -5,6 +5,7 @@ Modern terminal interface powered by Rich
 """
 
 import sys
+import atexit
 import os
 import argparse
 import signal
@@ -19,6 +20,7 @@ from PyQt6.QtCore import QCoreApplication, QObject, pyqtSlot
 from src.utils.config import ConfigManager
 from src.core.translation_pipeline import TranslationPipeline, PipelineResult, PipelineStage
 from src.core.translator import TranslationManager, TranslationEngine, PseudoTranslator
+from src.core.local_llm_server import LlamaServerManager, cleanup_stale_server
 from src.core.proxy_manager import ProxyManager
 from src.version import VERSION
 
@@ -74,6 +76,7 @@ BRAND_DIM = "dim white"
 
 ENGINES = [
     ("google",         "Google Translate",  "🌐", "Free — 13 mirror fallback"),
+    ("bing",           "Bing / MS Edge",    "🪟", "Free — no API key, Google fallback"),
     ("openai",         "OpenAI (GPT)",      "🤖", "API key required"),
     ("deepseek",       "DeepSeek",          "🔮", "API key required — OpenAI compatible"),
     ("local_llm",      "Local LLM",         "🏠", "Ollama / LM Studio — fully local"),
@@ -97,8 +100,13 @@ LANGUAGES = [
     ("fa", "Persian",    "🇮🇷"),
 ]
 
+# Owns the optional built-in llama-server child process (GGUF runner); the
+# atexit hook in run_translate_command guarantees it is not left behind.
+_LLAMA_SERVER = LlamaServerManager()
+
 ENGINE_MAP = {
     "google": TranslationEngine.GOOGLE,
+    "bing": TranslationEngine.BING,
     "openai": TranslationEngine.OPENAI,
     "deepseek": TranslationEngine.OPENAI,
     "local_llm": TranslationEngine.LOCAL_LLM,
@@ -416,7 +424,27 @@ def setup_engines(config: ConfigManager, engine_id: str, lt_url: str = "", lt_ke
                 translation_manager.add_translator(TranslationEngine.OPENAI, t)
             else:
                 t = LocalLLMTranslator(proxy_manager=proxy_manager, config_manager=config)
+                # Built-in GGUF mode: run llama-server ourselves (no Ollama/LM Studio).
+                if getattr(config.translation_settings, "local_llm_mode", "external") == "builtin":
+                    ts = config.translation_settings
+                    base_url = _LLAMA_SERVER.start(
+                        model_path=getattr(ts, "local_llm_gguf_path", ""),
+                        user_path=getattr(ts, "local_llm_server_path", ""),
+                        backend=getattr(ts, "local_llm_backend", "vulkan"),
+                        gpu_layers=getattr(ts, "local_llm_gpu_layers", -1),
+                        ctx_size=getattr(ts, "local_llm_ctx_size", 4096),
+                        parallel=max(1, int(getattr(ts, "ai_concurrency", 2) or 2)),
+                        port=getattr(ts, "local_llm_server_port", 0),
+                    )
+                    t._base_url = base_url
+                    t._client = None  # rebuilt lazily against the new URL
+                    print_success(f"Built-in llama-server ready: {base_url}")
                 translation_manager.add_translator(TranslationEngine.LOCAL_LLM, t)
+        elif engine == TranslationEngine.BING:
+            from src.core.translator import BingTranslator
+            t = BingTranslator(proxy_manager=proxy_manager, config_manager=config)
+            t.set_fallback_translator(google)
+            translation_manager.add_translator(TranslationEngine.BING, t)
         elif engine in (TranslationEngine.LIBRETRANSLATE, TranslationEngine.CUSTOM):
             from src.core.translator import LibreTranslateTranslator
             base_url = lt_url or getattr(config.translation_settings, "libretranslate_url", "http://localhost:5000")
@@ -437,6 +465,8 @@ def setup_engines(config: ConfigManager, engine_id: str, lt_url: str = "", lt_ke
 def run_translate_command(args) -> int:
     """Run translation pipeline."""
     print_banner()
+    atexit.register(_LLAMA_SERVER.stop)
+    cleanup_stale_server()  # reclaim a llama-server left by a crashed run
 
     input_path = os.path.abspath(args.input_path) if args.input_path else None
     if not input_path or not os.path.exists(input_path):
@@ -655,7 +685,7 @@ def interactive_mode() -> dict:
   HELP ───────────────────────────────────
   RenLocalizer CLI translates Ren'Py games.
   
-  ENGINES: Google, OpenAI, DeepSeek, Local LLM, LibreTranslate, Custom
+  ENGINES: Google, Bing, OpenAI, DeepSeek, Local LLM, LibreTranslate, Custom
   
   USAGE:
     python run_cli.py <path>

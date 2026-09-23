@@ -17,6 +17,7 @@ from .services import (
     PseudoTranslator,
     DeepLTranslator,
     LibreTranslateTranslator,
+    BingTranslator,
 )
 from .manager import TranslationManager
 
@@ -31,5 +32,6 @@ __all__ = [
     "PseudoTranslator",
     "DeepLTranslator",
     "LibreTranslateTranslator",
+    "BingTranslator",
     "TranslationManager",
 ]

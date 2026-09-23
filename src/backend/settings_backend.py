@@ -50,8 +50,10 @@ class SettingsBackend:
         if self._selected_engine not in (
             TranslationEngine.GOOGLE,
             TranslationEngine.OPENAI,
+            TranslationEngine.GEMINI,
             TranslationEngine.LOCAL_LLM,
             TranslationEngine.LIBRETRANSLATE,
+            TranslationEngine.BING,
             TranslationEngine.CUSTOM,
         ):
             self._selected_engine = TranslationEngine.GOOGLE
@@ -70,6 +72,7 @@ class SettingsBackend:
             "enable_desktop_notifications": [],
             "rpyc_reader": [],
             "deep_scan": [],
+            "stateful_lexer": [],
             "selected_engine": [],
             # OpenAI
             "openai_api_key": [],
@@ -78,6 +81,12 @@ class SettingsBackend:
             # Local LLM
             "local_llm_url": [],
             "local_llm_model": [],
+            "local_llm_mode": [],
+            "local_llm_gguf_path": [],
+            "local_llm_server_path": [],
+            "local_llm_backend": [],
+            "local_llm_gpu_layers": [],
+            "local_llm_ctx_size": [],
             # LibreTranslate
             "libretranslate_url": [],
             "libretranslate_api_key": [],
@@ -87,6 +96,7 @@ class SettingsBackend:
             # Gemini
             "gemini_api_key": [],
             "gemini_model": [],
+            "gemini_safety_settings": [],
             # Advanced AI
             "ai_temperature": [],
             "ai_timeout": [],
@@ -133,7 +143,9 @@ class SettingsBackend:
             "openai": TranslationEngine.OPENAI,
             "local_llm": TranslationEngine.LOCAL_LLM,
             "deepseek": TranslationEngine.OPENAI,
+            "gemini": TranslationEngine.GEMINI,
             "libretranslate": TranslationEngine.LIBRETRANSLATE,
+            "bing": TranslationEngine.BING,
             "custom": TranslationEngine.CUSTOM,
         }
         return mapping.get(engine_str.lower(), TranslationEngine.GOOGLE)
@@ -293,6 +305,65 @@ class SettingsBackend:
         self.config.translation_settings.local_llm_model = val.strip()
         self._emit("local_llm_model")
 
+    # ── Built-in GGUF runner (llama.cpp server) ──────────────────────────
+    def get_local_llm_mode(self) -> str:
+        mode = getattr(self.config.translation_settings, "local_llm_mode", "external")
+        return mode if mode in ("external", "builtin") else "external"
+
+    def set_local_llm_mode(self, val: str) -> None:
+        mode = str(val or "external").strip().lower()
+        self.config.translation_settings.local_llm_mode = (
+            mode if mode in ("external", "builtin") else "external"
+        )
+        self._emit("local_llm_mode")
+
+    def get_local_llm_gguf_path(self) -> str:
+        return getattr(self.config.translation_settings, "local_llm_gguf_path", "") or ""
+
+    def set_local_llm_gguf_path(self, val: str) -> None:
+        self.config.translation_settings.local_llm_gguf_path = str(val or "").strip()
+        self._emit("local_llm_gguf_path")
+
+    def get_local_llm_server_path(self) -> str:
+        return getattr(self.config.translation_settings, "local_llm_server_path", "") or ""
+
+    def set_local_llm_server_path(self, val: str) -> None:
+        self.config.translation_settings.local_llm_server_path = str(val or "").strip()
+        self._emit("local_llm_server_path")
+
+    def get_local_llm_backend(self) -> str:
+        backend = getattr(self.config.translation_settings, "local_llm_backend", "vulkan")
+        return backend if backend in ("vulkan", "cuda", "cpu") else "vulkan"
+
+    def set_local_llm_backend(self, val: str) -> None:
+        backend = str(val or "vulkan").strip().lower()
+        self.config.translation_settings.local_llm_backend = (
+            backend if backend in ("vulkan", "cuda", "cpu") else "vulkan"
+        )
+        self._emit("local_llm_backend")
+
+    def get_local_llm_gpu_layers(self) -> int:
+        return int(getattr(self.config.translation_settings, "local_llm_gpu_layers", -1))
+
+    def set_local_llm_gpu_layers(self, val: int) -> None:
+        try:
+            layers = int(val)
+        except (TypeError, ValueError):
+            layers = -1
+        self.config.translation_settings.local_llm_gpu_layers = max(-1, min(layers, 999))
+        self._emit("local_llm_gpu_layers")
+
+    def get_local_llm_ctx_size(self) -> int:
+        return int(getattr(self.config.translation_settings, "local_llm_ctx_size", 4096))
+
+    def set_local_llm_ctx_size(self, val: int) -> None:
+        try:
+            ctx = int(val)
+        except (TypeError, ValueError):
+            ctx = 4096
+        self.config.translation_settings.local_llm_ctx_size = max(512, min(ctx, 131072))
+        self._emit("local_llm_ctx_size")
+
     # ── AI Model Profile (Hy-MT2 / generic) ───────────────────────────────
 
     _VALID_AI_MODEL_PROFILES = ("auto", "generic", "hy_mt2")
@@ -310,7 +381,7 @@ class SettingsBackend:
         self.config.translation_settings.ai_model_profile = profile
         self._emit("ai_model_profile")
 
-    _VALID_AI_BATCH_FORMATS = ("scene", "json", "xml")
+    _VALID_AI_BATCH_FORMATS = ("scene", "json", "xml", "single")
 
     def get_ai_batch_format(self) -> str:
         fmt = getattr(
@@ -475,6 +546,13 @@ class SettingsBackend:
     def set_gemini_model(self, val: str) -> None:
         self.config.translation_settings.gemini_model = val.strip()
         self._emit("gemini_model")
+
+    def get_gemini_safety_settings(self) -> str:
+        return getattr(self.config.translation_settings, "gemini_safety_settings", "BLOCK_NONE") or "BLOCK_NONE"
+
+    def set_gemini_safety_settings(self, val: str) -> None:
+        self.config.translation_settings.gemini_safety_settings = (val or "BLOCK_NONE").strip()
+        self._emit("gemini_safety_settings")
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  Advanced AI Settings
@@ -641,6 +719,9 @@ class SettingsBackend:
             languages.append({"code": code, "name": name})
         return languages
 
+    def get_source_language(self) -> str:
+        return self.config.translation_settings.source_language or "auto"
+
     def set_source_language(self, lang: str) -> None:
         self.config.translation_settings.source_language = (
             lang.strip() if lang.strip() else "auto"
@@ -706,8 +787,21 @@ class SettingsBackend:
             getattr(self.config.translation_settings, "local_llm_model", "")
             or "llama3.2"
         )
+        local_llm_runtime = {
+            key: getattr(self.config.translation_settings, key, default)
+            for key, default in (
+                ("local_llm_mode", "external"),
+                ("local_llm_gguf_path", ""),
+                ("local_llm_server_path", ""),
+                ("local_llm_backend", "vulkan"),
+                ("local_llm_gpu_layers", -1),
+                ("local_llm_ctx_size", 4096),
+                ("local_llm_server_port", 0),
+            )
+        }
         gemini_key = self.config.api_keys.gemini_api_key or ""
         gemini_model = self.config.translation_settings.gemini_model or "gemini-2.5-flash"
+        gemini_safety = getattr(self.config.translation_settings, "gemini_safety_settings", "BLOCK_NONE") or "BLOCK_NONE"
 
         libretranslate_url = (
             getattr(self.config.translation_settings, "libretranslate_url", "")
@@ -758,10 +852,13 @@ class SettingsBackend:
             self.config.translation_settings.openai_base_url = openai_base_url
             self.config.translation_settings.local_llm_url = local_llm_url
             self.config.translation_settings.local_llm_model = local_llm_model
+            for _key, _value in local_llm_runtime.items():
+                setattr(self.config.translation_settings, _key, _value)
 
             # Gemini
             self.config.api_keys.gemini_api_key = gemini_key
             self.config.translation_settings.gemini_model = gemini_model
+            self.config.translation_settings.gemini_safety_settings = gemini_safety
 
             # LibreTranslate / Custom
             self.config.translation_settings.libretranslate_url = libretranslate_url

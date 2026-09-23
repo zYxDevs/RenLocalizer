@@ -146,7 +146,7 @@ def get_project_id(project_path: str, game_exe_path: Optional[str] = None) -> st
     # Strategy 3: Check root folder for Ren'Py executable files
     try:
         if os.path.isdir(project_path):
-            files = os.listdir(project_path)
+            files = sorted(os.listdir(project_path))
             candidates = []
             for f in files:
                 f_path = os.path.join(project_path, f)

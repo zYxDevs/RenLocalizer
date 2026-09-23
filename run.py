@@ -33,6 +33,10 @@ os.environ["QT_QUICK_CONTROLS_STYLE"] = "Material"
 os.environ["QT_QUICK_CONTROLS_MATERIAL_THEME"] = "Dark"
 os.environ["QT_QUICK_CONTROLS_MATERIAL_ACCENT"] = "Purple"
 
+# Suppress noisy legacy font warnings on Windows DirectWrite (e.g. 8514oem raster and OpenType script 20)
+if "QT_LOGGING_RULES" not in os.environ:
+    os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts*=false;qt.text.font.db*=false;*.debug=false"
+
 if sys.platform == "darwin" and not os.environ.get("QT_MAC_WANTS_LAYER"):
     os.environ["QT_MAC_WANTS_LAYER"] = "1"
 
@@ -231,7 +235,8 @@ def main() -> int:
     print("Loading Qt framework...")
 
     try:
-        from PyQt6.QtCore import QTimer, QUrl, Qt
+        from PyQt6.QtCore import QTimer, QUrl, Qt, QLoggingCategory
+        QLoggingCategory.setFilterRules("qt.qpa.fonts*=false\nqt.text.font.db*=false\n*.debug=false")
         from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
         from PyQt6.QtQuick import QQuickWindow, QSGRendererInterface
         from PyQt6.QtWidgets import QApplication, QSplashScreen

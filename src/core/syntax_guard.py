@@ -77,7 +77,20 @@ _PAT_PCT = r'%%'                             # Literal % (double percent)
 # This prevents incomplete [[  from breaking subsequent [variable] patterns
 _PAT_ESC_COMPLETE = r'\[\[.*?\]\]|\{\{.*?\}\}'  # Complete pairs only: [[...]] or {{...}}
 _PAT_ESC_INCOMPLETE = r'\}\}|\]\]'              # Only closing brackets as fallback (not opening)
-_PAT_ESC = f"({_PAT_ESC_COMPLETE}|{_PAT_ESC_INCOMPLETE})"  # Complete pairs first, then singles
+# v2.8.17: `[[` on its own is Ren'Py's escape for a literal `[`, so the words
+# after it are text — not a variable. "\\[Sleep until the next morning\\]"
+# normalises to "[[Sleep until the next morning]", and without this the [...]
+# pattern swallowed the whole sentence into one placeholder. Complete `[[..]]`
+# pairs still match first, so their long-standing atomic handling is unchanged.
+_PAT_ESC_LONE_OPEN = r'\[\[|\{\{'
+_PAT_ESC = f"({_PAT_ESC_COMPLETE}|{_PAT_ESC_INCOMPLETE}|{_PAT_ESC_LONE_OPEN})"  # pairs, closers, then lone openers
+# v2.8.17: Ren'Py also escapes with a backslash — "\[Sleep until the next morning\]"
+# is literal display text, not interpolation. Without this the [...] pattern matched
+# from the bracket after the backslash and swallowed the whole sentence into one
+# placeholder, so the words never reached the translator (309 such menu choices in
+# FunTanariZ 1.12 alone). Protecting just the escape keeps the text translatable and
+# round-trips the escape untouched.
+_PAT_BACKSLASH_ESC = r'\\[\[\]{}]'          # \[ \] \{ \} — escaped literal bracket/brace
 _PAT_TAG = r'\{[^\}]+\}'                     # {tag} (greedy match inside braces)
 _PAT_EMPTY_BRACE = r'\{\}'                   # Empty {} (Python .format() positional placeholder)
 # _PAT_DISAMBIG: Disambiguation tags like {#comment}, {#game} - MUST be preserved exactly
@@ -88,6 +101,14 @@ _PAT_DISAMBIG = r'\{#[^}]+\}'
 # Old pattern had catastrophic backtracking: r"\[(?:[^\[\]\n'\"]+|'[^']*'|\"[^\"]*\"|\[[^\[\]\n]*\])+\]"
 # New: Simpler but safer - matches [...] with anything inside (more lenient, less prone to hang)
 _PAT_VAR = r"\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]"
+#: A Ren'Py interpolation holds a Python expression, so it never contains a bare
+#: space. "[player_name]" and "[obj.attr]" are variables; "[Sleep until the next
+#: morning]" is a label the player reads (an escaped literal bracket that has
+#: been unescaped). Components that strip or compare placeholders must share
+#: this definition, or they silently drop such labels.
+INTERPOLATION_RE = re.compile(r'\[[^\[\]\s]+\]')
+
+
 _PAT_FMT = r'%\([^)]+\)[sdfi]|%[sdfi]'       # Python formatting: %(var)s or %s (Support for s, d, f, i)
 _PAT_QMK = r'\?[A-Za-z]\d{3}\?'              # ?A000? style
 _PAT_UNI = r'\u27e6(?:[A-Z][A-Z0-9_]{1,24}|RLPH[A-F0-9]{6}_\d+)\u27e7'  # Legacy + internal unicode token style
@@ -101,7 +122,7 @@ _PAT_RUBY = r'【[^】]*[｜|][^】]*】'
 # v2.6.6: Complete escaped pairs MUST match before variables to prevent partial breakage
 # Example: [[Phone]] matches as atomic esc pair; bare [[Phone] won't match as [[ so [Phone] matches normally
 # v2.8.3: Ruby/furigana lenticular brackets added before variables to ensure correct atomic capture
-_PROTECT_PATTERN_STR = f"({_PAT_DISAMBIG}|{_PAT_ESC}|{_PAT_RUBY}|{_PAT_TAG}|{_PAT_EMPTY_BRACE}|{_PAT_FMT}|{_PAT_PCT}|{_PAT_QMK}|{_PAT_UNI}|{_PAT_VAR})"
+_PROTECT_PATTERN_STR = f"({_PAT_BACKSLASH_ESC}|{_PAT_DISAMBIG}|{_PAT_ESC}|{_PAT_RUBY}|{_PAT_TAG}|{_PAT_EMPTY_BRACE}|{_PAT_FMT}|{_PAT_PCT}|{_PAT_QMK}|{_PAT_UNI}|{_PAT_VAR})"
 
 # Pre-compiled Regexes (Module Level Optimization)
 PROTECT_RE = re.compile(_PROTECT_PATTERN_STR)

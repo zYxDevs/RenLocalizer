@@ -11,7 +11,11 @@ from src.core.syntax_guard import protect_renpy_syntax, restore_renpy_syntax
     ("[player] {color=#fff}Kazandı{/color}", ["[player]", "{color=#fff}", "{/color}"]),
     ("⟦V000⟧", ["⟦V000⟧"]),
     ("?T123?", ["?T123?"]),
-    ("{image=sub_icon_s} [[Text]", ["{image=sub_icon_s}", "[Text]"]), # {image} = orphaned open tag, [[Text] = [+[Text]
+    # `[[` is Ren'Py's escape for a literal `[` — its whole purpose is to stop the
+    # rest being read as interpolation, and the lexer turns source "\[" into it
+    # (renpy/lexer.py dequote). So "[[Text]" renders as the literal "[Text]" and
+    # only the escape itself is a placeholder; "Text]" stays translatable.
+    ("{image=sub_icon_s} [[Text]", ["{image=sub_icon_s}", "[["]),
 ])
 def test_protect_restore_renpy_syntax(original, expected_placeholders):
     protected, placeholders = protect_renpy_syntax(original)

@@ -28,6 +28,19 @@ _RENPY_TAG_NAMES = frozenset({
 })
 
 
+_RPY_ESCAPE_MAP = {'n': '\n', 't': '\t', '"': '"', '\\': '\\'}
+
+
+def _unescape_rpy(text: str) -> str:
+    """Unescape a Ren'Py string literal in a single left-to-right pass.
+
+    Chained ``.replace()`` is order-dependent and corrupts literal
+    backslashes (an escaped ``\\n`` is misread as a real newline), which
+    breaks export dedup. A single pass maps each escape exactly once.
+    """
+    return re.sub(r'\\(.)', lambda m: _RPY_ESCAPE_MAP.get(m.group(1), m.group(1)), text)
+
+
 def _has_dynamic_variables(text: str) -> bool:
     """Return True if text contains Python {variable} patterns (not Ren'Py tags)."""
     braced = re.findall(r'\{([^}]+)\}', text)
@@ -93,7 +106,7 @@ def export_strings_to_rpy(project_path: str, target_lang: str, skip_dynamic: boo
                             # Find 'old "..."' matches
                             for match in re.findall(r'^\s*old\s+"(.*?)"\s*$', content, re.MULTILINE):
                                 # Unescape for matching
-                                u = match.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+                                u = _unescape_rpy(match)
                                 existing_texts.add(u)
                     except Exception: continue
 

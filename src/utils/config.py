@@ -80,6 +80,7 @@ MAX_AI_BATCH_SIZE = 10000
 ENGINE_BATCH_SIZE_CAPS: dict[str, int] = {
     "google": 1000,
     "yandex": 1000,
+    "bing": 100,  # edge.microsoft.com: ≤100 items / ~50k chars per request
 }
 
 EXTRACTION_MODE_THRESHOLDS: dict[str, float] = {
@@ -303,6 +304,15 @@ class TranslationSettings:
     local_llm_timeout: int = (
         300  # Local LLM için ayrı timeout (saniye) - yerel modeller daha yavaş olabilir
     )
+    # Built-in GGUF runner (v2.8.17): "external" = Ollama/LM Studio at
+    # local_llm_url, "builtin" = RenLocalizer starts llama-server itself.
+    local_llm_mode: str = "external"
+    local_llm_gguf_path: str = ""  # .gguf model chosen by the user
+    local_llm_server_path: str = ""  # Optional: user's own llama-server binary
+    local_llm_backend: str = "vulkan"  # vulkan | cuda | cpu
+    local_llm_gpu_layers: int = -1  # -1 = offload everything the GPU can hold
+    local_llm_ctx_size: int = 4096
+    local_llm_server_port: int = 0  # 0 = pick a free port
     libretranslate_url: str = "http://localhost:5000"  # Local LibreTranslate Endpoint
     libretranslate_api_key: str = ""  # Optional API key for managed instances
     custom_endpoint_url: str = ""  # Custom translation API endpoint
@@ -311,7 +321,7 @@ class TranslationSettings:
     ai_temperature: float = AI_DEFAULT_TEMPERATURE  # 0.0-1.0, lower = more consistent, higher = more creative
     ai_timeout: int = AI_DEFAULT_TIMEOUT  # seconds, timeout for AI requests
     ai_max_tokens: int = AI_DEFAULT_MAX_TOKENS  # max output tokens
-    ai_batch_size: int = 50  # Number of lines per AI request batch (1-10000)
+    ai_batch_size: int = 15  # Number of lines per AI request batch (1-10000)
     ai_retry_count: int = AI_MAX_RETRIES  # number of retries on failure
     ai_concurrency: int = 2  # NEW: Maximum concurrent requests for AI engines
     ai_request_delay: float = 1.5  # NEW: Delay between AI requests (seconds)
@@ -327,6 +337,9 @@ class TranslationSettings:
     # "scene" -> Context-aware screenplay script format with speaker tags (recommended for VN dialogue)
     # "json"  -> Structured JSON object matching schema
     # "xml"   -> Traditional XML element grouping
+    # "single"-> One request per line, no neighbouring-line context (v2.8.17):
+    #            recommended for small local models and pure translation
+    #            models (Hy-MT), which are forced into this mode anyway.
     ai_batch_format: str = "scene"
     ai_scene_batch_size: int = 15  # Dialogues per scene block (5-50)
     # Aggressive Translation Retry: Retry unchanged translations with Lingva/alt endpoints (slower but more thorough)
@@ -429,6 +442,7 @@ class TranslationSettings:
             "gemini",
             "local_llm",
             "libretranslate",
+            "bing",
             "custom",
             "yandex",
             "pseudo",
@@ -448,7 +462,7 @@ class TranslationSettings:
             self.gemini_safety_settings = "BLOCK_NONE"
         if self.ai_model_profile not in ("auto", "generic", "hy_mt2"):
             self.ai_model_profile = "auto"
-        if self.ai_batch_format not in ("scene", "json", "xml"):
+        if self.ai_batch_format not in ("scene", "json", "xml", "single"):
             self.ai_batch_format = "scene"
         extraction_mode = str(self.extraction_mode).strip().lower() or "balanced"
         if extraction_mode not in EXTRACTION_MODE_THRESHOLDS:
@@ -463,6 +477,19 @@ class TranslationSettings:
         self.local_llm_url = (
             str(self.local_llm_url).strip() or "http://localhost:11434/v1"
         )
+        if str(self.local_llm_mode).strip().lower() not in ("external", "builtin"):
+            self.local_llm_mode = "external"
+        else:
+            self.local_llm_mode = str(self.local_llm_mode).strip().lower()
+        self.local_llm_gguf_path = str(self.local_llm_gguf_path).strip()
+        self.local_llm_server_path = str(self.local_llm_server_path).strip()
+        if str(self.local_llm_backend).strip().lower() not in ("vulkan", "cuda", "cpu"):
+            self.local_llm_backend = "vulkan"
+        else:
+            self.local_llm_backend = str(self.local_llm_backend).strip().lower()
+        self.local_llm_gpu_layers = _safe_int(self.local_llm_gpu_layers, -1, -1, 999)
+        self.local_llm_ctx_size = _safe_int(self.local_llm_ctx_size, 4096, 512, 131072)
+        self.local_llm_server_port = _safe_int(self.local_llm_server_port, 0, 0, 65535)
         self.libretranslate_url = (
             str(self.libretranslate_url).strip() or "http://localhost:5000"
         )
@@ -1414,6 +1441,46 @@ class ConfigManager:
             {"renpy": "yiddish", "api": "yi", "english": "Yiddish", "native": "ייִדיש"},
             {"renpy": "yoruba", "api": "yo", "english": "Yoruba", "native": "Yorùbá"},
             {"renpy": "zulu", "api": "zu", "english": "Zulu", "native": "isiZulu"},
+            {"renpy": "assamese", "api": "as", "english": "Assamese", "native": "অসমীয়া"},
+            {"renpy": "aymara", "api": "ay", "english": "Aymara", "native": "Aymar aru"},
+            {"renpy": "bambara", "api": "bm", "english": "Bambara", "native": "Bamanankan"},
+            {"renpy": "bhojpuri", "api": "bho", "english": "Bhojpuri", "native": "भोजपुरी"},
+            {"renpy": "cebuano", "api": "ceb", "english": "Cebuano", "native": "Cebuano"},
+            {"renpy": "chichewa", "api": "ny", "english": "Chichewa", "native": "ChiCheŵa"},
+            {"renpy": "corsican", "api": "co", "english": "Corsican", "native": "Corsu"},
+            {"renpy": "dhivehi", "api": "dv", "english": "Dhivehi", "native": "ދިވެހި"},
+            {"renpy": "dogri", "api": "doi", "english": "Dogri", "native": "डोगरी"},
+            {"renpy": "ewe", "api": "ee", "english": "Ewe", "native": "Èʋegbe"},
+            {"renpy": "frisian", "api": "fy", "english": "Frisian", "native": "Frysk"},
+            {"renpy": "guarani", "api": "gn", "english": "Guarani", "native": "Avañe'ẽ"},
+            {"renpy": "hawaiian", "api": "haw", "english": "Hawaiian", "native": "ʻŌlelo Hawaiʻi"},
+            {"renpy": "hmong", "api": "hmn", "english": "Hmong", "native": "Hmoob"},
+            {"renpy": "ilocano", "api": "ilo", "english": "Ilocano", "native": "Ilokano"},
+            {"renpy": "kinyarwanda", "api": "rw", "english": "Kinyarwanda", "native": "Ikinyarwanda"},
+            {"renpy": "konkani", "api": "gom", "english": "Konkani", "native": "कोंकणी"},
+            {"renpy": "krio", "api": "kri", "english": "Krio", "native": "Krio"},
+            {"renpy": "kurdish_sorani", "api": "ckb", "english": "Kurdish (Sorani)", "native": "کوردی (سۆرانی)"},
+            {"renpy": "latin", "api": "la", "english": "Latin", "native": "Latina"},
+            {"renpy": "lingala", "api": "ln", "english": "Lingala", "native": "Lingála"},
+            {"renpy": "luganda", "api": "lg", "english": "Luganda", "native": "Oluganda"},
+            {"renpy": "maithili", "api": "mai", "english": "Maithili", "native": "मैथिली"},
+            {"renpy": "meiteilon", "api": "mni-Mtei", "english": "Meiteilon (Manipuri)", "native": "ꯃꯩꯇꯩꯂꯣꯟ"},
+            {"renpy": "mizo", "api": "lus", "english": "Mizo", "native": "Mizo ṭawng"},
+            {"renpy": "odia", "api": "or", "english": "Odia (Oriya)", "native": "ଓଡ଼ିଆ"},
+            {"renpy": "oromo", "api": "om", "english": "Oromo", "native": "Afaan Oromoo"},
+            {"renpy": "quechua", "api": "qu", "english": "Quechua", "native": "Runasimi"},
+            {"renpy": "sanskrit", "api": "sa", "english": "Sanskrit", "native": "संस्कृतम्"},
+            {"renpy": "sepedi", "api": "nso", "english": "Sepedi (Northern Sotho)", "native": "Sesotho sa Leboa"},
+            {"renpy": "tatar", "api": "tt", "english": "Tatar", "native": "Татар теле"},
+            {"renpy": "tigrinya", "api": "ti", "english": "Tigrinya", "native": "ትግርኛ"},
+            {"renpy": "tsonga", "api": "ts", "english": "Tsonga", "native": "Xitsonga"},
+            {"renpy": "turkmen", "api": "tk", "english": "Turkmen", "native": "Türkmençe"},
+            {"renpy": "twi", "api": "ak", "english": "Twi (Akan)", "native": "Twi"},
+            {"renpy": "uyghur", "api": "ug", "english": "Uyghur", "native": "ئۇيغۇرچە"},
+            {"renpy": "crimean_tatar", "api": "crh", "english": "Crimean Tatar", "native": "Qırımtatarca"},
+            {"renpy": "occitan", "api": "oc", "english": "Occitan", "native": "Occitan"},
+            {"renpy": "silesian", "api": "szl", "english": "Silesian", "native": "Ślōnski"},
+            {"renpy": "tuvan", "api": "tyv", "english": "Tuvan", "native": "Тыва дыл"},
         ]
 
     def get_renpy_to_api_map(self) -> Dict[str, str]:

@@ -6,9 +6,12 @@ a JSON report summarizing counts and per-file details.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,6 +25,7 @@ class FileReport:
     blocked: int = 0
     recovered_retry: int = 0
     recovered_variant: int = 0
+    normalized_wrapper: int = 0
     entries: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -38,6 +42,12 @@ class DiagnosticReport:
     total_blocked_as_corrupted: int = 0
     total_recovered_by_retry: int = 0
     total_recovered_by_synthesized_variant: int = 0
+    total_normalized_wrapper: int = 0
+    engine: str = ''
+    model: str = ''
+    stage_provenance: Dict[str, Any] = field(default_factory=dict)
+    unchanged_reasons: Dict[str, int] = field(default_factory=dict)
+    alias_kinds: Dict[str, int] = field(default_factory=dict)
     files: Dict[str, FileReport] = field(default_factory=dict)
     coverage_warnings: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -48,7 +58,6 @@ class DiagnosticReport:
             self.files[file_path] = fr
         fr.extracted += 1
         rec = {**entry, 'status': 'extracted'}
-        # include raw_text if available for ID/debug matching
         if 'raw_text' in entry and entry.get('raw_text') is not None:
             rec['raw_text'] = entry.get('raw_text')
         # If a translation_id is supplied or can be computed externally, include it.
@@ -113,10 +122,48 @@ class DiagnosticReport:
             rec['original_text'] = original_text
         if reason:
             rec['reason'] = reason
+            self.unchanged_reasons[reason] = self.unchanged_reasons.get(reason, 0) + 1
         fr.entries.append(rec)
         self.total_unchanged += 1
-        if reason == 'unchanged_core_ui':
+        if reason in ('unchanged_core_ui', 'unchanged_sentence', 'core_ui', 'sentence'):
             self.total_unchanged_by_engine += 1
+
+    def mark_normalized_wrapper(
+        self,
+        file_path: str,
+        translation_id: str,
+        *,
+        original_text: str | None = None,
+        translated_text: str | None = None,
+        normalized_text: str | None = None,
+    ) -> None:
+        fr = self.files.get(file_path)
+        if not fr:
+            fr = FileReport(file_path=file_path)
+            self.files[file_path] = fr
+        fr.normalized_wrapper += 1
+        self.total_normalized_wrapper += 1
+        rec: Dict[str, Any] = {
+            'translation_id': translation_id,
+            'status': 'normalized',
+            'reason': 'outer_color_wrapper',
+        }
+        if original_text is not None:
+            rec['original_text'] = original_text
+        if translated_text is not None:
+            rec['translated_text'] = translated_text
+        if normalized_text is not None:
+            rec['normalized_text'] = normalized_text
+        fr.entries.append(rec)
+
+    def set_provenance(self, engine: str, model: str = '', **kwargs) -> None:
+        self.engine = engine or ''
+        self.model = model or ''
+        if kwargs:
+            self.stage_provenance.update(kwargs)
+
+    def record_alias_kind(self, kind: str, count: int = 1) -> None:
+        self.alias_kinds[kind] = self.alias_kinds.get(kind, 0) + int(count)
 
     def mark_blocked(
         self,
@@ -207,7 +254,15 @@ class DiagnosticReport:
                 'recovered_by_retry': self.total_recovered_by_retry,
                 'recovered_by_synthesized_variant': self.total_recovered_by_synthesized_variant,
                 'coverage_warning_count': len(self.coverage_warnings),
+                'normalized_wrapper': self.total_normalized_wrapper,
             },
+            'provenance': {
+                'engine': self.engine,
+                'model': self.model,
+                **self.stage_provenance,
+            },
+            'unchanged_reasons': dict(self.unchanged_reasons),
+            'alias_kinds': dict(self.alias_kinds),
             'coverage_warnings': self.coverage_warnings,
             'files': {p: {
                 'extracted': fr.extracted,
@@ -218,6 +273,7 @@ class DiagnosticReport:
                 'blocked': fr.blocked,
                 'recovered_retry': fr.recovered_retry,
                 'recovered_variant': fr.recovered_variant,
+                'normalized_wrapper': fr.normalized_wrapper,
                 'entries': fr.entries,
             } for p, fr in self.files.items()}
         }
@@ -229,5 +285,4 @@ class DiagnosticReport:
             content = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
             save_text_safely(p, content, encoding='utf-8')
         except Exception:
-            pass
-
+            logger.warning("Failed to write diagnostics report to %s", path, exc_info=True)

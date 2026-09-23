@@ -15,6 +15,7 @@ All engines share a common base that handles:
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import random
 import re
@@ -30,6 +31,7 @@ from src.core.translator import (
 from src.core.syntax_guard import (
     protect_renpy_syntax,
     restore_renpy_syntax,
+    restore_renpy_syntax_xml,
     validate_translation_integrity,
     inject_missing_placeholders,
 )
@@ -141,6 +143,21 @@ def _resolve_language_name(code: Optional[str]) -> str:
     if name:
         return name
     return code  # Last resort: pass the raw code through
+
+
+def profile_prefers_single_segment(config_manager) -> bool:
+    """True when the configured model profile is a pure translation model.
+
+    Mirrors AsyncBaseAITranslator._prefers_single_segment() for callers that
+    only have the config (e.g. the pipeline, before a translator exists).
+    """
+    if not config_manager or not hasattr(config_manager, "translation_settings"):
+        return False
+    ts = config_manager.translation_settings
+    if str(getattr(ts, "ai_model_profile", "auto") or "").strip().lower() == "hy_mt2":
+        return True
+    model_name = getattr(ts, "local_llm_model", None) or getattr(ts, "openai_model", None)
+    return detect_model_profile(model_name) == "hy_mt2"
 
 
 def resolve_model_profile(config_manager, model_name: Optional[str]) -> Optional[str]:
@@ -488,11 +505,23 @@ def _parse_xml_batch(xml_text: str, count: int) -> List[Optional[str]]:
             root = ET.fromstring(xml_block)
             for item in root.findall("item"):
                 idx_str = item.get("id")
-                if idx_str is not None and item.text is not None:
-                    try:
-                        results[int(idx_str)] = item.text
-                    except (ValueError, IndexError):
-                        pass
+                if idx_str is None:
+                    continue
+                # Models frequently emit protected tags (<ph id="N">..</ph>) unescaped,
+                # which ElementTree parses as child elements; item.text alone would
+                # silently drop everything after the first tag. Re-serialize children
+                # so the full inner content (tags + tails) survives.
+                inner = item.text or ""
+                if len(item):
+                    inner += html.unescape(
+                        "".join(ET.tostring(child, encoding="unicode") for child in item)
+                    )
+                if not inner:
+                    continue
+                try:
+                    results[int(idx_str)] = inner
+                except (ValueError, IndexError):
+                    pass
             return results
     except ET.ParseError:
         pass
@@ -672,6 +701,47 @@ class AsyncBaseAITranslator(BaseTranslator):
 
     def _is_hy_mt2(self) -> bool:
         return self._model_profile == "hy_mt2"
+
+    def _prefers_single_segment(self) -> bool:
+        """True when this engine must translate one segment per request.
+
+        Two cases:
+          * Hy-MT / Hunyuan-MT are *translation* models, not instruction models.
+            Their model card defines a single shape ("translate the following
+            text into X"), so wrapping requests in scene/XML/JSON scaffolding
+            with [ID] tags makes small quants (1.8B Q4) mangle the structure —
+            the batch then fails to parse and every line is retried one by one,
+            which is both slow and lower quality than asking properly once.
+          * The user selected ai_batch_format="single" (recommended for small
+            local models): no neighbouring lines, no speaker prefixes, one
+            request per line.
+        """
+        if self._is_hy_mt2():
+            return True
+        if self.config_manager:
+            fmt = getattr(
+                self.config_manager.translation_settings, "ai_batch_format", "scene"
+            )
+            return str(fmt or "").strip().lower() == "single"
+        return False
+
+    async def _translate_each_single(
+        self, requests: List[TranslationRequest]
+    ) -> List[TranslationResult]:
+        """Translates every request on its own via translate_single.
+
+        Concurrency is bounded by the semaphore translate_single already takes;
+        adding another one here would nest the same lock and deadlock.
+        """
+        async def one(req: TranslationRequest) -> TranslationResult:
+            if self.should_stop_callback and self.should_stop_callback():
+                return TranslationResult(
+                    req.text, req.text, req.source_lang, req.target_lang,
+                    self._engine, True, confidence=0.0, metadata={"skipped": True},
+                )
+            return await self.translate_single(req)
+
+        return list(await asyncio.gather(*(one(r) for r in requests)))
 
     def _get_sampling_kwargs(self) -> Dict[str, Any]:
         """Engine-specific sampling kwargs passed through to _call_api.
@@ -1041,6 +1111,11 @@ class AsyncBaseAITranslator(BaseTranslator):
             return []
         if len(requests) == 1:
             return [await self.translate_single(requests[0])]
+
+        # Pure translation models (Hy-MT) and the explicit "single" format skip
+        # batch scaffolding entirely — see _prefers_single_segment().
+        if self._prefers_single_segment():
+            return await self._translate_each_single(requests)
 
         # Determine batch format and chunk size
         batch_format = "scene"
@@ -1522,135 +1597,558 @@ class LocalLLMTranslator(OpenAITranslator):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Gemini Helpers — Safety Settings & Thinking Config
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_gemini_safety_settings(safety_level: str = "BLOCK_NONE") -> List[Any]:
+    """
+    Constructs safety settings list matching the requested safety level across
+    all standard HarmCategories in both official google.genai and legacy SDKs.
+    """
+    level = (safety_level or "BLOCK_NONE").upper().strip()
+    if _GEMINI_MODE == "google_genai" and genai is not None and hasattr(genai, "types"):
+        threshold_map = {
+            "BLOCK_NONE": getattr(genai.types.HarmBlockThreshold, "BLOCK_NONE", "BLOCK_NONE"),
+            "BLOCK_ONLY_HIGH": getattr(genai.types.HarmBlockThreshold, "BLOCK_ONLY_HIGH", "BLOCK_ONLY_HIGH"),
+            "STANDARD": getattr(genai.types.HarmBlockThreshold, "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE"),
+        }
+        selected_threshold = threshold_map.get(level, threshold_map["BLOCK_NONE"])
+
+        category_names = [
+            "HARM_CATEGORY_HARASSMENT",
+            "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "HARM_CATEGORY_CIVIC_INTEGRITY",
+        ]
+        settings = []
+        for cat_name in category_names:
+            cat = getattr(genai.types.HarmCategory, cat_name, None)
+            if cat is not None and hasattr(genai.types, "SafetySetting"):
+                try:
+                    settings.append(genai.types.SafetySetting(category=cat, threshold=selected_threshold))
+                except Exception:
+                    pass
+        return settings
+
+    # Legacy SDK or fallback dict structure
+    threshold_str = "BLOCK_NONE" if level == "BLOCK_NONE" else (
+        "BLOCK_ONLY_HIGH" if level == "BLOCK_ONLY_HIGH" else "BLOCK_MEDIUM_AND_ABOVE"
+    )
+    return [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": threshold_str},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": threshold_str},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": threshold_str},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": threshold_str},
+    ]
+
+
+def _build_gemini_thinking_config() -> Optional[Any]:
+    """
+    Returns ThinkingConfig with thinking_budget=0 for translation tasks.
+    Prevents reasoning models (gemini-3.1-flash-lite, gemini-2.5-flash) from
+    consuming unnecessary thought tokens or stalling response.text.
+    """
+    if _GEMINI_MODE == "google_genai" and genai is not None and hasattr(genai, "types") and hasattr(genai.types, "ThinkingConfig"):
+        try:
+            return genai.types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            return None
+    return None
+
+
+_GEMINI_BATCH_SYSTEM_PROMPT = (
+    "You are a professional game translator. "
+    "Translate game dialogue and UI text from {src} to {tgt}. "
+    "Rules: "
+    "1) Preserve ALL special tokens/tags exactly: XML tags like <ph id=\"N\">...</ph>, [variable], {{tag}}, {{color=#fff}}. "
+    "2) Maintain the tone, register, style, and natural flow of the dialogue. "
+    "3) You will receive an XML block with numbered <item id=\"...\"> elements. "
+    "Return the EXACT SAME XML structure with the translated text inside each <item>. "
+    "Do NOT add markdown code ticks (```xml), explanations, notes, or extra content outside the XML."
+)
+
+_GEMINI_SINGLE_SYSTEM_PROMPT = (
+    "You are a professional game translator. "
+    "Translate game dialogue and UI text from {src} to {tgt}. "
+    "Preserve ALL special placeholders and tags exactly: <ph id=\"N\">...</ph>, [variable], {{tag}}, {{color=#fff}}. "
+    "Maintain the tone, register, and style of the original. "
+    "Return ONLY the translated text without explanations, markdown ticks, or surrounding quotes."
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GeminiTranslator — Google Gemini (official google-genai SDK)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class GeminiTranslator(BaseTranslator):
-    """Google Gemini translator supporting official google.genai and legacy SDKs."""
+    """
+    Google Gemini translator supporting official google.genai and legacy SDKs.
+    Features:
+      - Full safety filter customization (default BLOCK_NONE for VN dialogue)
+      - Zero-budget thinking config to prevent runaway reasoning tokens
+      - Token-efficient XML batching to respect free tier RPM limits
+      - Exponential backoff on rate limits (429)
+      - Automatic fallback delegation to GoogleTranslator
+    """
 
-    def __init__(self, *args, api_key: Optional[str] = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        safety_level: Optional[str] = None,
+        temperature: Optional[float] = None,
+        timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        proxy_manager=None,
+        config_manager=None,
+        **kwargs,
+    ) -> None:
         if not _GEMINI_AVAILABLE:
             raise ImportError(
                 "google-genai is required for Gemini translation. "
                 "Install it with: pip install google-genai"
             )
-        resolved_key = api_key
-        if not resolved_key:
-            cm = kwargs.get('config_manager', None)
-            if cm and hasattr(cm, 'api_keys'):
-                resolved_key = cm.api_keys.gemini_api_key or ""
-        if not resolved_key:
-            resolved_key = "none"  # Allow instantiation without key; fails gracefully at translate time
 
-        config_manager = kwargs.get('config_manager', None)
-        model_name = "gemini-2.5-flash"
-        if config_manager and hasattr(config_manager, 'translation_settings'):
-            model_name = getattr(config_manager.translation_settings, 'gemini_model', None) or model_name
+        cm = config_manager or kwargs.get('config_manager', None)
+        resolved_key = api_key
+        if not resolved_key and cm and hasattr(cm, 'api_keys'):
+            resolved_key = cm.api_keys.gemini_api_key or ""
+        if not resolved_key:
+            resolved_key = "none"
+
+        # Resolve model name with priority: explicit arg -> config -> default
+        model_name = model or kwargs.get('model')
+        if not model_name and cm and hasattr(cm, 'translation_settings'):
+            model_name = getattr(cm.translation_settings, 'gemini_model', None)
+        model_name = (model_name or "gemini-2.5-flash").strip()
+
+        # Resolve safety level
+        s_level = safety_level or kwargs.get('safety_level')
+        if not s_level and cm and hasattr(cm, 'translation_settings'):
+            s_level = getattr(cm.translation_settings, 'gemini_safety_settings', None)
+        self._safety_level: str = (s_level or "BLOCK_NONE").strip()
+
+        # Numeric translation settings
+        ts_settings = getattr(cm, 'translation_settings', None) if cm else None
+        self._temperature: float = (
+            temperature if temperature is not None
+            else getattr(ts_settings, 'ai_temperature', AI_DEFAULT_TEMPERATURE)
+        )
+        self._timeout: float = (
+            timeout if timeout is not None
+            else getattr(ts_settings, 'ai_timeout', AI_DEFAULT_TIMEOUT)
+        )
+        self._max_tokens: int = (
+            max_tokens if max_tokens is not None
+            else getattr(ts_settings, 'ai_max_tokens', AI_DEFAULT_MAX_TOKENS)
+        )
+        self._batch_size: int = min(
+            batch_size or getattr(ts_settings, 'ai_batch_size', 15), 50
+        )
 
         super().__init__(
             api_key=resolved_key,
-            proxy_manager=kwargs.get('proxy_manager', None),
-            config_manager=config_manager,
+            proxy_manager=proxy_manager or kwargs.get('proxy_manager', None),
+            config_manager=cm,
         )
         self._model: str = model_name
-        self._timeout = kwargs.get('timeout', AI_DEFAULT_TIMEOUT)
-        self._batch_size = min(kwargs.get('batch_size', 20), 50)
         self._engine = TranslationEngine.GEMINI
+        self._semaphore_count: int = max(1, int(kwargs.get('semaphore_count', 3) or 3))
+        self._semaphore: Optional[asyncio.Semaphore] = None
 
-        if _GEMINI_MODE == "google_genai":
-            client_kwargs = {}
+        if _GEMINI_MODE == "google_genai" and genai is not None:
+            client_kwargs: Dict[str, Any] = {}
             if resolved_key and resolved_key != "none":
                 client_kwargs["api_key"] = resolved_key
             self._client = genai.Client(**client_kwargs)
         else:
-            if resolved_key and resolved_key != "none" and hasattr(genai, "configure"):
+            if resolved_key and resolved_key != "none" and genai is not None and hasattr(genai, "configure"):
                 genai.configure(api_key=resolved_key)
-            if hasattr(genai, "GenerativeModel"):
+            if genai is not None and hasattr(genai, "GenerativeModel"):
                 self._client = genai.GenerativeModel(model_name)
             else:
                 self._client = None
 
-    async def translate_single(self, request: TranslationRequest) -> TranslationResult:
-        """Translate a single text using Gemini."""
-        source_lang = request.source_lang or "auto"
-        target_lang = request.target_lang or "en"
-        prompt = (
-            f"Translate the following text from {source_lang} to {target_lang}. "
-            f"Only return the translation, nothing else. "
-            f"Do NOT modify or translate any code, markup, HTML tags, or placeholders: "
-            f"{request.text}"
-        )
+    def _build_content_config(
+        self,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> Optional[Any]:
+        """Builds a comprehensive GenerateContentConfig for google.genai."""
+        if _GEMINI_MODE != "google_genai" or genai is None or not hasattr(genai, "types"):
+            return None
+
+        cfg_class = getattr(genai.types, "GenerateContentConfig", None)
+        if not cfg_class:
+            return None
+
+        kwargs: Dict[str, Any] = {
+            "temperature": temperature if temperature is not None else self._temperature,
+            "max_output_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+        }
+
+        safety_settings = _build_gemini_safety_settings(self._safety_level)
+        if safety_settings:
+            kwargs["safety_settings"] = safety_settings
+
+        thinking_cfg = _build_gemini_thinking_config()
+        if thinking_cfg is not None:
+            kwargs["thinking_config"] = thinking_cfg
+
+        if system_prompt:
+            kwargs["system_instruction"] = system_prompt
 
         try:
-            if _GEMINI_MODE == "google_genai" and self._client:
-                config_kwargs = {
-                    "temperature": getattr(request, 'temperature', 0.3),
-                    "max_output_tokens": getattr(request, 'max_tokens', 2048),
-                }
-                config = (
-                    genai.types.GenerateContentConfig(**config_kwargs)
-                    if hasattr(genai.types, "GenerateContentConfig")
-                    else None
-                )
-                response = await self._client.aio.models.generate_content(
+            return cfg_class(**kwargs)
+        except Exception as exc:
+            self.logger.warning("Failed to build GenerateContentConfig (%s): %s", type(exc).__name__, exc)
+            return None
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        # Created lazily so it binds to the event loop that actually runs the
+        # translation (the pipeline creates a fresh loop per run).
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._semaphore_count)
+        return self._semaphore
+
+    @staticmethod
+    def _build_fallback_request(req: TranslationRequest, fallback: Any) -> TranslationRequest:
+        """
+        Builds a clean request for the fallback engine.
+
+        Pipeline requests carry XML-protected text (<ph id="N">..</ph>) that only
+        the AI prompt understands; the fallback (GoogleTranslator) must receive the
+        original source text and apply its own protection scheme.
+        """
+        metadata = req.metadata if isinstance(req.metadata, dict) else {}
+        original = metadata.get('original_text') or req.text
+        fb_meta = {
+            k: v for k, v in metadata.items()
+            if k not in ('preprotected', 'placeholders', 'xml_mode')
+        }
+        fb_meta['original_text'] = original
+        fb_engine = getattr(fallback, '_engine', None) or req.engine
+        return TranslationRequest(
+            text=original,
+            source_lang=req.source_lang,
+            target_lang=req.target_lang,
+            engine=fb_engine,
+            metadata=fb_meta,
+        )
+
+    async def _delegate_to_fallback(self, req: TranslationRequest, error: str = "") -> TranslationResult:
+        """Invokes the attached fallback translator (if any) with an unprotected request."""
+        fallback = getattr(self, "fallback_translator", None) or getattr(self, "_fallback", None)
+        if fallback is not None:
+            try:
+                fb_req = self._build_fallback_request(req, fallback)
+                res = await fallback.translate_single(fb_req)
+                if res and res.success and (res.translated_text or "").strip():
+                    meta = dict(req.metadata) if isinstance(req.metadata, dict) else {}
+                    fb_engine = getattr(fallback, '_engine', None)
+                    meta['fallback_engine'] = getattr(fb_engine, 'value', str(fb_engine or 'fallback'))
+                    # Keep engine=GEMINI so TranslationManager cache keys stay coherent;
+                    # provenance is recorded in metadata['fallback_engine'].
+                    return TranslationResult(
+                        original_text=req.text,
+                        translated_text=res.translated_text,
+                        source_lang=req.source_lang,
+                        target_lang=req.target_lang,
+                        engine=TranslationEngine.GEMINI,
+                        success=True,
+                        confidence=getattr(res, 'confidence', 0.0),
+                        metadata=meta,
+                    )
+            except Exception as fb_exc:
+                self.logger.warning("Gemini fallback translator failed: %s", fb_exc)
+        req_meta = req.metadata if isinstance(req.metadata, dict) else {}
+        return TranslationResult(
+            original_text=req.text,
+            # Never surface XML-protected text; echo the clean source instead.
+            translated_text=req_meta.get('original_text') or req.text,
+            source_lang=req.source_lang,
+            target_lang=req.target_lang,
+            engine=TranslationEngine.GEMINI,
+            success=False,
+            error=error or "Gemini translation failed and no fallback succeeded",
+            metadata=req_meta,
+        )
+
+    @staticmethod
+    def _strip_response_noise(text: str) -> str:
+        """Removes markdown code fences the model may wrap around its answer."""
+        t = (text or "").strip()
+        if t.startswith("```"):
+            t = re.sub(r'^```[a-zA-Z]*\s*', '', t)
+            t = re.sub(r'\s*```$', '', t)
+        return t.strip()
+
+    def _finalize_translation(self, req: TranslationRequest, raw: str) -> Optional[str]:
+        """
+        Restores protected Ren'Py syntax in a raw model answer and validates it.
+
+        Returns the restored text, or None when placeholders were lost (the caller
+        then delegates to the fallback engine instead of emitting corrupted text).
+        """
+        text = self._strip_response_noise(raw)
+        if not text:
+            return None
+        metadata = req.metadata if isinstance(req.metadata, dict) else {}
+        placeholders = metadata.get('placeholders') or {}
+        if not isinstance(placeholders, dict) or not placeholders:
+            return text
+
+        if metadata.get('xml_mode', True):
+            restored = restore_renpy_syntax_xml(text, placeholders)
+        else:
+            restored = restore_renpy_syntax(text, placeholders)
+            if validate_translation_integrity(restored, placeholders):
+                recovered = _recover_placeholders_levenshtein(req.text, text, placeholders)
+                restored = restore_renpy_syntax(recovered, placeholders)
+
+        if validate_translation_integrity(restored, placeholders):
+            return None
+        return restored
+
+    async def _generate(
+        self,
+        contents: str,
+        system_instruction: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Performs one Gemini API call (official or legacy SDK) and returns raw text."""
+        if _GEMINI_MODE == "google_genai" and self._client:
+            config = self._build_content_config(
+                system_prompt=system_instruction,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            response = await asyncio.wait_for(
+                self._client.aio.models.generate_content(
                     model=self._model,
-                    contents=prompt,
+                    contents=contents,
                     config=config,
+                ),
+                timeout=self._timeout,
+            )
+        elif self._client:
+            loop = asyncio.get_running_loop()
+            gen_cfg = None
+            if genai is not None and hasattr(genai, "types") and hasattr(genai.types, "GenerationConfig"):
+                gen_cfg = genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
                 )
-                translated = response.text.strip() if response and getattr(response, "text", None) else request.text
-            elif self._client:
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
+            safety_cfg = _build_gemini_safety_settings(self._safety_level)
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
                     None,
                     lambda: self._client.generate_content(
-                        prompt,
-                        generation_config=getattr(genai.types, "GenerationConfig", None)(
-                            temperature=getattr(request, 'temperature', 0.3),
-                            max_output_tokens=getattr(request, 'max_tokens', 2048),
-                        ) if hasattr(genai.types, "GenerationConfig") else None,
+                        f"{system_instruction}\n\n{contents}",
+                        generation_config=gen_cfg,
+                        safety_settings=safety_cfg,
+                    ),
+                ),
+                timeout=self._timeout,
+            )
+        else:
+            return ""
+
+        text = getattr(response, "text", None) if response else None
+        return text.strip() if isinstance(text, str) else ""
+
+    @staticmethod
+    def _classify_error(exc: BaseException) -> Tuple[bool, bool]:
+        """Returns (is_quota, is_safety) for a Gemini exception."""
+        msg = str(exc)
+        upper = msg.upper()
+        is_quota = "429" in msg or "RESOURCE_EXHAUSTED" in upper or "QUOTA" in upper
+        is_safety = "SAFETY" in upper or "blocked" in msg.lower() or "PROHIBITED_CONTENT" in upper
+        return is_quota, is_safety
+
+    async def translate_single(self, request: TranslationRequest) -> TranslationResult:
+        """Translate a single text using Gemini with safety, thinking guard, and fallback."""
+        source_lang = request.source_lang or "auto"
+        target_lang = request.target_lang or "en"
+        src_name = _SUPPORTED_LANGUAGES.get(source_lang, source_lang)
+        tgt_name = _SUPPORTED_LANGUAGES.get(target_lang, target_lang)
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+
+        source_text = request.text or ""
+        if not source_text.strip():
+            return TranslationResult(
+                original_text=source_text,
+                translated_text=source_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                engine=TranslationEngine.GEMINI,
+                success=True,
+                metadata=metadata,
+            )
+
+        system_instruction = _GEMINI_SINGLE_SYSTEM_PROMPT.format(src=src_name, tgt=tgt_name)
+        prompt = f"Translate the following text from {src_name} to {tgt_name}:\n{source_text}"
+        max_tokens = getattr(request, 'max_tokens', None) or self._max_tokens
+        temperature = getattr(request, 'temperature', None)
+        if temperature is None:
+            temperature = self._temperature
+
+        last_error = ""
+        for attempt in range(3):
+            if self.should_stop_callback and self.should_stop_callback():
+                break
+            try:
+                async with self._get_semaphore():
+                    raw = await self._generate(prompt, system_instruction, max_tokens, temperature)
+            except Exception as exc:
+                last_error = str(exc) or type(exc).__name__
+                is_quota, is_safety = self._classify_error(exc)
+
+                if is_safety:
+                    self.logger.warning(
+                        "Gemini safety filter triggered on text %r. Delegating to fallback.", source_text[:40]
                     )
+                    return await self._delegate_to_fallback(request, "Content blocked by safety filter")
+
+                if is_quota:
+                    if attempt < 2:
+                        wait = _jitter_sleep(2.0, attempt)
+                        self.logger.warning("Gemini 429 quota hit. Retrying in %.1fs...", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    res = await self._delegate_to_fallback(request, last_error)
+                    if not res.success:
+                        res.quota_exceeded = True
+                    return res
+
+                self.logger.error("Gemini translation error: %s", exc)
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
+                continue
+
+            if not raw:
+                # Empty response text (blocked or runaway thinking) -> delegate to fallback
+                self.logger.warning("Gemini returned empty text for %r; attempting fallback.", source_text[:40])
+                return await self._delegate_to_fallback(request, "Empty response from Gemini")
+
+            final = self._finalize_translation(request, raw)
+            if final is None:
+                self.logger.warning(
+                    "Gemini lost protected placeholders for %r; attempting fallback.", source_text[:40]
                 )
-                translated = response.text.strip() if response and getattr(response, "text", None) else request.text
-            else:
-                translated = request.text
+                return await self._delegate_to_fallback(request, "Placeholder integrity check failed")
 
             return TranslationResult(
-                original_text=request.text,
-                translated_text=translated,
+                original_text=source_text,
+                translated_text=final,
                 source_lang=source_lang,
                 target_lang=target_lang,
                 engine=TranslationEngine.GEMINI,
-                success=bool(translated and translated != request.text),
+                success=True,
+                confidence=0.9,
+                metadata=metadata,
             )
 
-        except Exception as exc:
-            error_msg = str(exc)
-            if "SAFETY" in error_msg.upper() or "blocked" in error_msg.lower():
-                return TranslationResult(
-                    original_text=request.text,
-                    translated_text=request.text,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    engine=TranslationEngine.GEMINI,
-                    success=False,
-                    error="Content blocked by safety filter - original text returned",
-                )
-            self.logger.error(f"Gemini translation error: {exc}")
-            return TranslationResult(
-                original_text=request.text,
-                translated_text=request.text,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                engine=TranslationEngine.GEMINI,
-                success=False,
-                error=error_msg,
+        return await self._delegate_to_fallback(request, last_error)
+
+    async def _translate_chunk(self, chunk: List[TranslationRequest]) -> List[TranslationResult]:
+        """Translates one XML batch chunk; falls back per item or per chunk on failure."""
+        source_lang = chunk[0].source_lang or "auto"
+        target_lang = chunk[0].target_lang or "en"
+        src_name = _SUPPORTED_LANGUAGES.get(source_lang, source_lang)
+        tgt_name = _SUPPORTED_LANGUAGES.get(target_lang, target_lang)
+
+        xml_batch = _build_xml_batch([r.text for r in chunk])
+        system_instruction = _GEMINI_BATCH_SYSTEM_PROMPT.format(src=src_name, tgt=tgt_name)
+        # Batch token budget: allocate proportionally up to 8192
+        batch_max_tokens = min(8192, max(2048, len(chunk) * 200))
+
+        parsed: Optional[List[Optional[str]]] = None
+        for attempt in range(3):
+            if self.should_stop_callback and self.should_stop_callback():
+                break
+            try:
+                async with self._get_semaphore():
+                    response_text = await self._generate(
+                        xml_batch, system_instruction, batch_max_tokens, self._temperature
+                    )
+            except Exception as exc:
+                is_quota, is_safety = self._classify_error(exc)
+                if is_safety:
+                    self.logger.warning("Gemini batch hit safety filter. Splitting batch into individual requests.")
+                    break
+                if is_quota:
+                    if attempt < 2:
+                        wait = _jitter_sleep(2.5, attempt)
+                        self.logger.warning("Gemini batch 429 rate limit. Retrying in %.1fs...", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    break
+                self.logger.error("Gemini batch translation error on attempt %d: %s", attempt + 1, exc)
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
+                continue
+
+            if response_text:
+                candidate = _parse_xml_batch(response_text, len(chunk))
+                if any(t is not None for t in candidate):
+                    parsed = candidate
+                    break
+            self.logger.warning(
+                "Gemini batch attempt %d returned unparseable or empty XML. Response preview: %r",
+                attempt + 1, (response_text or "")[:150],
             )
+
+        results: List[TranslationResult] = []
+        if parsed is not None:
+            for i, req in enumerate(chunk):
+                val = parsed[i] if i < len(parsed) else None
+                final = self._finalize_translation(req, val) if val is not None else None
+                if final is not None:
+                    results.append(TranslationResult(
+                        original_text=req.text,
+                        translated_text=final,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        engine=TranslationEngine.GEMINI,
+                        success=True,
+                        confidence=0.9,
+                        metadata=req.metadata if isinstance(req.metadata, dict) else {},
+                    ))
+                else:
+                    # Item missing from the batch answer or lost its placeholders
+                    results.append(await self.translate_single(req))
+            return results
+
+        # Whole chunk failed: item-by-item (translate_single handles 429/safety/fallback itself)
+        self.logger.warning("Gemini XML batch failed; falling back to item-by-item translation.")
+        for req in chunk:
+            results.append(await self.translate_single(req))
+        return results
 
     async def translate_batch(self, requests: List[TranslationRequest]) -> List[TranslationResult]:
-        results = []
-        for req in requests:
-            result = await self.translate_single(req)
-            results.append(result)
+        """
+        Translates requests in structured XML chunks of `ai_batch_size` (max 50) items.
+        Chunks run concurrently, bounded by the request semaphore, to respect
+        Free Tier RPM limits while keeping throughput on paid tiers.
+        """
+        if not requests:
+            return []
+        if len(requests) == 1:
+            return [await self.translate_single(requests[0])]
+
+        chunk_size = max(1, int(self._batch_size or 1))
+        chunks = [requests[i:i + chunk_size] for i in range(0, len(requests), chunk_size)]
+        chunk_results = await asyncio.gather(*(self._translate_chunk(c) for c in chunks))
+
+        results: List[TranslationResult] = []
+        for cr in chunk_results:
+            results.extend(cr)
         return results
 
     async def close(self) -> None:
@@ -1669,3 +2167,4 @@ class GeminiTranslator(BaseTranslator):
             "ar": "Arabic", "fa": "Persian", "it": "Italian",
             "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
         }
+

@@ -135,7 +135,7 @@ class RPAParser:
             # Parse header: "RPA-3.0 XXXXXXXXXXXXXXXX YYYYYYYY\n"
             # XXXXXXXXXXXXXXXX = hex offset to index
             # YYYYYYYY = hex key for deobfuscation
-            parts = header.decode('utf-8').strip().split()
+            parts = header.decode('utf-8', errors='replace').strip().split()
             if len(parts) < 3:
                 self.logger.error(f"Invalid RPA-3.0 header: {header}")
                 return False
@@ -164,7 +164,7 @@ class RPAParser:
         """Extract RPA-2.0 format archive."""
         try:
             # Parse header: "RPA-2.0 XXXXXXXXXXXXXXXX\n"
-            parts = header.decode('utf-8').strip().split()
+            parts = header.decode('utf-8', errors='replace').strip().split()
             if len(parts) < 2:
                 self.logger.error(f"Invalid RPA-2.0 header: {header}")
                 return False
@@ -231,7 +231,12 @@ class RPAParser:
                 
                 # Read and write file
                 f.seek(offset)
-                content = prefix + f.read(length - len(prefix))
+                read_len = length - len(prefix)
+                if read_len < 0:
+                    self.logger.warning(f"Skipping malformed RPA entry (prefix longer than length): {filename}")
+                    errors += 1
+                    continue
+                content = prefix + f.read(read_len)
                 
                 with open(out_path, 'wb') as out_f:
                     out_f.write(content)

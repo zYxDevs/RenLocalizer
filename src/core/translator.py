@@ -50,6 +50,7 @@ from src.core.translators import (
     PseudoTranslator,
     DeepLTranslator,
     LibreTranslateTranslator,
+    BingTranslator,
     TranslationManager,
 )
 
@@ -68,6 +69,7 @@ __all__ = [
     "PseudoTranslator",
     "DeepLTranslator",
     "LibreTranslateTranslator",
+    "BingTranslator",
     # Manager
     "TranslationManager",
     # Syntax guard

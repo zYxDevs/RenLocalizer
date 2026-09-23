@@ -155,7 +155,11 @@ class RenPyOutputFormatter:
     
     # Pre-compiled regex patterns for performance (class-level caching)
     _FORMAT_PLACEHOLDER_RE = re.compile(r'\{[^}]*\}')
-    _VARIABLE_RE = re.compile(r'\[[^\[\]]+\]')
+    # A Ren'Py interpolation holds a Python expression, which never contains a
+    # bare space — so `[Sleep until the next morning]` (an escaped menu label
+    # that reaches us unescaped) is display text, not a variable. Matching it
+    # as one made the 'nothing but markup' checks below drop the whole label.
+    _VARIABLE_RE = re.compile(r'\[[^\[\]\s]+\]')
     _DISAMBIGUATION_RE = re.compile(r'\{#[^}]+\}')
     _TAG_RE = re.compile(r'\{[^{}]*\}')
     _URL_RE = re.compile(r'^(https?://|ftp://|mailto:|www\.)')
@@ -173,6 +177,10 @@ class RenPyOutputFormatter:
     )
     _SNAKE_CASE_RE = re.compile(r'^[a-z][a-z0-9]*(_[a-z0-9]+)+$')
     _SCREAMING_SNAKE_RE = re.compile(r'^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$')
+    # v2.8.17: Any underscore-joined identifier token (mixed case), e.g.
+    # u2_Fire_And_Ice, alt_K_RETURN, meta_K_LEFT — code identifiers, never text.
+    # Supersets _SNAKE_CASE_RE (lower) and _SCREAMING_SNAKE_RE (upper).
+    _IDENTIFIER_WITH_UNDERSCORE_RE = re.compile(r'^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$')
     # v2.8.13: camelCase identifiers (getUserName, playIntro) — code, not text.
     # Safety-net parity with the parser's is_meaningful_text() camelCase check.
     _CAMEL_CASE_RE = re.compile(r'^[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*$')
@@ -244,10 +252,11 @@ class RenPyOutputFormatter:
         r'\bclass\s+\w+\s*[:\(]|'
         r'(?:^|\n)\s*for\s+\w+\s+in\s+\w+\s*:|'
         r'\bif\s+\w+\s+in\s+\w+:|'
-        r'\bimport\s+\w+|'
+        r'(?:^|[:;\n]\s*)import\s+\w+|'
         r'\bfrom\s+\w+\s+import|'
         r'\breturn\s+(?:self|cls|True|False|None|\d|\(|\[|\{|"|\')|'
-        r'\braise\s+\w+|'
+        r'(?:^|[:;\n]\s*)raise\s+(?:[A-Z]\w*|e|err|ex|exc)\b|'
+        r'(?:^|[:;\n]\s*)raise\s+\w+\s*\(|'
         r'\btry\s*:|'
         r'\bexcept\s+\w*:|'
         r'(?:^|\n)\s*while\s+\w+\s*:|'
@@ -339,7 +348,7 @@ class RenPyOutputFormatter:
         stripped_of_vars = self._VARIABLE_RE.sub('', stripped_of_tags)
         stripped_of_markup = stripped_of_vars.strip()
         # If after removing all tags/vars, only punctuation/numbers/spaces remain, skip
-        if stripped_of_markup and not re.search(r'[a-zA-Z\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]{2,}', stripped_of_markup):
+        if stripped_of_markup and not re.search(r'[a-zA-Z\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]{2,}', stripped_of_markup):
             return True
         
         # --- SINGLE TECHNICAL WORDS ---
@@ -379,8 +388,10 @@ class RenPyOutputFormatter:
         # - CJK: \u4E00-\u9FFF
         # - Japanese: \u3040-\u30FF
         # - Korean: \uAC00-\uD7AF
+        # - Hebrew: \u0590-\u05FF
+        # - Arabic / Persian / Urdu: \u0600-\u06FF + \u0750-\u077F + presentation forms
         # - Common punctuation and symbols
-        strange_chars = len(re.findall(r'[^\x20-\x7E\s\u00A0-\u00FF\u0100-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]', text_strip))
+        strange_chars = len(re.findall(r'[^\x20-\x7E\s\u00A0-\u00FF\u0100-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]', text_strip))
         
         # If more than 30% strange characters, it's likely corrupted
         if len(text_strip) > 0 and strange_chars > len(text_strip) * 0.3:
@@ -401,8 +412,11 @@ class RenPyOutputFormatter:
         # CHECK 6: Detect specific patterns of rpyc corruption
         # Strings like "z�X�", "qu�p��", "@Bq#8W" - random looking with special chars
         if len(text_strip) >= 3 and len(text_strip) <= 15:
-            # Count unusual character sequences
-            unusual_sequences = len(re.findall(r'[^\x20-\x7E]', text_strip))
+            # Count chars outside every legitimate script range (Latin, Cyrillic,
+            # CJK, Japanese, Korean, Hebrew, Arabic/Persian/Urdu). Replacement
+            # chars, PUA, and random binary bytes are NOT in this set, so they
+            # still count as "unusual" — but real CJK/RTL words no longer do.
+            unusual_sequences = len(re.findall(r'[^\x20-\x7E\u00A0-\u00FF\u0100-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]', text_strip))
             ascii_letters = len(re.findall(r'[a-zA-Z]', text_strip))
             # If we have unusual chars and very few letters, skip
             if unusual_sequences >= 1 and ascii_letters <= 3:
@@ -545,6 +559,11 @@ class RenPyOutputFormatter:
         
         # Skip SCREAMING_SNAKE_CASE constants (using cached pattern)
         if self._SCREAMING_SNAKE_RE.match(text_strip):
+            return True
+
+        # v2.8.17: Skip any underscore-joined identifier token (mixed case)
+        # e.g. u2_Fire_And_Ice, alt_K_RETURN — code identifiers, never text.
+        if self._IDENTIFIER_WITH_UNDERSCORE_RE.match(text_strip):
             return True
 
         # v2.8.13: Skip camelCase identifiers (using cached pattern)

@@ -2,8 +2,9 @@
 """Tests for AI translator implementations (OpenAI, DeepSeek, LocalLLM, Gemini)."""
 
 import json as _json
+import re
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from types import SimpleNamespace
 
 import pytest
@@ -240,12 +241,279 @@ class TestGeminiTranslator:
             assert "tr" in langs
             assert "en" in langs
 
-    def test_real_installed_sdk_instantiation(self):
-        """Verify that GeminiTranslator instantiates without error using the actual installed SDK."""
-        from src.core.ai_translator import GeminiTranslator, _GEMINI_AVAILABLE
-        if _GEMINI_AVAILABLE:
-            t = GeminiTranslator(api_key="fake-test-key")
-            assert t._engine == TranslationEngine.GEMINI
+    def test_build_gemini_safety_settings(self):
+        """Verify safety settings threshold mapping and categories."""
+        from src.core.ai_translator import _build_gemini_safety_settings
+        settings = _build_gemini_safety_settings("BLOCK_NONE")
+        assert len(settings) >= 4
+        # All categories should be mapped without error
+
+    def test_build_gemini_thinking_config(self):
+        """Verify that thinking budget is set to 0 to prevent runaway reasoning tokens."""
+        from src.core.ai_translator import _build_gemini_thinking_config
+        tc = _build_gemini_thinking_config()
+        if tc is not None:
+            assert getattr(tc, "thinking_budget", None) == 0
+
+    def test_translate_single_success(self):
+        """Verify single translation with mock client response."""
+        import asyncio
+        from src.core.ai_translator import GeminiTranslator
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        t = GeminiTranslator(api_key="fake-key")
+        mock_response = MagicMock()
+        mock_response.text = "Merhaba dünya!"
+        
+        mock_models = MagicMock()
+        mock_models.generate_content = AsyncMock(return_value=mock_response)
+        mock_aio = MagicMock(models=mock_models)
+        t._client = MagicMock(aio=mock_aio)
+
+        req = TranslationRequest(text="Hello world!", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI)
+        result = asyncio.run(t.translate_single(req))
+        assert result.success is True
+        assert result.translated_text == "Merhaba dünya!"
+
+    def test_translate_single_safety_delegation_to_fallback(self):
+        """Verify that safety filter triggers delegation to fallback translator."""
+        import asyncio
+        from src.core.ai_translator import GeminiTranslator
+        from src.core.translator import TranslationRequest, TranslationResult, TranslationEngine
+
+        t = GeminiTranslator(api_key="fake-key")
+        mock_models = MagicMock()
+        mock_models.generate_content = AsyncMock(side_effect=Exception("SAFETY block triggered"))
+        mock_aio = MagicMock(models=mock_models)
+        t._client = MagicMock(aio=mock_aio)
+
+        mock_fallback = MagicMock()
+        mock_fallback.translate_single = AsyncMock(return_value=TranslationResult(
+            original_text="Mature dialogue",
+            translated_text="Yetişkin diyalog",
+            source_lang="en",
+            target_lang="tr",
+            engine=TranslationEngine.GOOGLE,
+            success=True,
+        ))
+        t.set_fallback_translator(mock_fallback)
+
+        req = TranslationRequest(text="Mature dialogue", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI)
+        result = asyncio.run(t.translate_single(req))
+        assert result.success is True
+        assert result.translated_text == "Yetişkin diyalog"
+        mock_fallback.translate_single.assert_awaited_once()
+
+    def test_translate_batch_xml_success(self):
+        """Verify structured XML batch translation parsing in one request."""
+        import asyncio
+        from src.core.ai_translator import GeminiTranslator
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        t = GeminiTranslator(api_key="fake-key")
+        mock_response = MagicMock()
+        mock_response.text = (
+            "<translations>\n"
+            '  <item id="0">Günaydın</item>\n'
+            '  <item id="1">İyi akşamlar</item>\n'
+            "</translations>"
+        )
+
+        mock_models = MagicMock()
+        mock_models.generate_content = AsyncMock(return_value=mock_response)
+        mock_aio = MagicMock(models=mock_models)
+        t._client = MagicMock(aio=mock_aio)
+
+        reqs = [
+            TranslationRequest(text="Good morning", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI),
+            TranslationRequest(text="Good evening", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI),
+        ]
+        results = asyncio.run(t.translate_batch(reqs))
+        assert len(results) == 2
+        assert results[0].success is True
+        assert results[0].translated_text == "Günaydın"
+        assert results[1].success is True
+        assert results[1].translated_text == "İyi akşamlar"
+        # Must be called only once for batch
+        assert mock_models.generate_content.await_count == 1
+
+    # ── Placeholder restoration, fallback request shape, chunking ────────────
+
+    @staticmethod
+    def _make_gemini(response_text=None, side_effect=None):
+        from src.core.ai_translator import GeminiTranslator
+
+        t = GeminiTranslator(api_key="fake-key")
+        mock_models = MagicMock()
+        if side_effect is not None:
+            mock_models.generate_content = AsyncMock(side_effect=side_effect)
+        else:
+            mock_response = MagicMock()
+            mock_response.text = response_text
+            mock_models.generate_content = AsyncMock(return_value=mock_response)
+        t._client = MagicMock(aio=MagicMock(models=mock_models))
+        return t, mock_models
+
+    @staticmethod
+    def _protected_request(source):
+        from src.core.syntax_guard import protect_renpy_syntax_xml
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        protected, placeholders = protect_renpy_syntax_xml(source)
+        req = TranslationRequest(
+            text=protected, source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI,
+            metadata={"preprotected": True, "original_text": source,
+                      "placeholders": placeholders, "xml_mode": True},
+        )
+        return req, protected, placeholders
+
+    def test_single_restores_xml_placeholders(self):
+        """<ph id=N> tags from the pipeline must be turned back into Ren'Py syntax."""
+        import asyncio
+
+        source = "Hello [player_name], {color=#f00}welcome{/color}!"
+        req, protected, _ = self._protected_request(source)
+        model_answer = protected.replace("Hello", "Merhaba").replace("welcome", "hoş geldin")
+        t, _ = self._make_gemini(response_text=model_answer)
+
+        result = asyncio.run(t.translate_single(req))
+        assert result.success is True
+        assert result.translated_text == "Merhaba [player_name], {color=#f00}hoş geldin{/color}!"
+        assert "<ph" not in result.translated_text
+
+    def test_single_lost_placeholder_delegates_to_fallback(self):
+        """A model answer that drops a placeholder must not be emitted; fallback is used."""
+        import asyncio
+        from src.core.translator import TranslationResult, TranslationEngine
+
+        source = "Hello [player_name]!"
+        req, _, _ = self._protected_request(source)
+        t, _ = self._make_gemini(response_text="Merhaba!")  # placeholder dropped
+
+        fallback = MagicMock()
+        fallback._engine = TranslationEngine.GOOGLE
+        fallback.translate_single = AsyncMock(return_value=TranslationResult(
+            original_text=source, translated_text="Merhaba [player_name]!",
+            source_lang="en", target_lang="tr", engine=TranslationEngine.GOOGLE, success=True,
+        ))
+        t.set_fallback_translator(fallback)
+
+        result = asyncio.run(t.translate_single(req))
+        assert result.success is True
+        assert result.translated_text == "Merhaba [player_name]!"
+        assert result.metadata.get("fallback_engine") == "google"
+
+    def test_single_lost_placeholder_without_fallback_fails(self):
+        import asyncio
+
+        req, _, _ = self._protected_request("Hello [player_name]!")
+        t, _ = self._make_gemini(response_text="Merhaba!")
+        result = asyncio.run(t.translate_single(req))
+        assert result.success is False
+        assert "<ph" not in result.translated_text
+
+    def test_fallback_receives_unprotected_request(self):
+        """Fallback engines must get the original text, not the XML-protected AI text."""
+        import asyncio
+        from src.core.translator import TranslationResult, TranslationEngine
+
+        source = "Hello [player_name]!"
+        req, protected, _ = self._protected_request(source)
+        t, _ = self._make_gemini(side_effect=Exception("SAFETY block triggered"))
+
+        fallback = MagicMock()
+        fallback._engine = TranslationEngine.GOOGLE
+        fallback.translate_single = AsyncMock(return_value=TranslationResult(
+            original_text=source, translated_text="Merhaba [player_name]!",
+            source_lang="en", target_lang="tr", engine=TranslationEngine.GOOGLE, success=True,
+        ))
+        t.set_fallback_translator(fallback)
+
+        asyncio.run(t.translate_single(req))
+        sent = fallback.translate_single.await_args.args[0]
+        assert sent.text == source
+        assert sent.engine == TranslationEngine.GOOGLE
+        assert "preprotected" not in sent.metadata
+        assert "placeholders" not in sent.metadata
+        assert sent.metadata["original_text"] == source
+
+    def test_batch_restores_placeholders_even_when_model_unescapes_tags(self):
+        """Models often return <ph> tags unescaped inside <item>; inner content must survive."""
+        import asyncio
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        source = "Hello [player_name], {color=#f00}welcome{/color}!"
+        req0, protected, _ = self._protected_request(source)
+        req1 = TranslationRequest(text="Good evening", source_lang="en", target_lang="tr",
+                                  engine=TranslationEngine.GEMINI,
+                                  metadata={"preprotected": True, "original_text": "Good evening",
+                                            "placeholders": {}, "xml_mode": True})
+        answer0 = protected.replace("Hello", "Merhaba").replace("welcome", "hoş geldin")
+        xml = (
+            "<translations>\n"
+            f'  <item id="0">{answer0}</item>\n'
+            '  <item id="1">İyi akşamlar</item>\n'
+            "</translations>"
+        )
+        t, mock_models = self._make_gemini(response_text=xml)
+
+        results = asyncio.run(t.translate_batch([req0, req1]))
+        assert mock_models.generate_content.await_count == 1
+        assert results[0].translated_text == "Merhaba [player_name], {color=#f00}hoş geldin{/color}!"
+        assert results[1].translated_text == "İyi akşamlar"
+
+    def test_batch_chunks_by_batch_size(self):
+        """Large request lists are split into ai_batch_size XML chunks (not one giant request)."""
+        import asyncio
+        from src.core.ai_translator import GeminiTranslator
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        t = GeminiTranslator(api_key="fake-key", batch_size=4)
+        seen_sizes = []
+
+        async def fake_generate(contents, system_instruction, max_tokens, temperature):
+            ids = [int(i) for i in re.findall(r'<item id="(\d+)">', contents)]
+            seen_sizes.append(len(ids))
+            return "<translations>" + "".join(f'<item id="{i}">T{i}</item>' for i in ids) + "</translations>"
+
+        t._generate = fake_generate
+        reqs = [TranslationRequest(text=f"Line {i}", source_lang="en", target_lang="tr",
+                                   engine=TranslationEngine.GEMINI) for i in range(10)]
+        results = asyncio.run(t.translate_batch(reqs))
+        assert sorted(seen_sizes) == [2, 4, 4]
+        assert len(results) == 10
+        assert all(r.success for r in results)
+        assert results[9].translated_text == "T1"  # id is chunk-local; last chunk has 2 items
+        assert results[4].translated_text == "T0"
+
+    def test_batch_missing_item_falls_back_to_single(self):
+        import asyncio
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        t, mock_models = self._make_gemini(response_text='<translations><item id="0">Bir</item></translations>')
+        single_resp = MagicMock()
+        single_resp.text = "İki"
+        batch_resp = MagicMock()
+        batch_resp.text = '<translations><item id="0">Bir</item></translations>'
+        mock_models.generate_content = AsyncMock(side_effect=[batch_resp, single_resp])
+
+        reqs = [TranslationRequest(text="One", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI),
+                TranslationRequest(text="Two", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI)]
+        results = asyncio.run(t.translate_batch(reqs))
+        assert results[0].translated_text == "Bir"
+        assert results[1].translated_text == "İki"
+        assert mock_models.generate_content.await_count == 2
+
+    def test_unchanged_answer_is_still_a_success(self):
+        """Same-text answers (e.g. proper nouns) are legitimate results, not failures."""
+        import asyncio
+        from src.core.translator import TranslationRequest, TranslationEngine
+
+        t, _ = self._make_gemini(response_text="Sorcerer")
+        req = TranslationRequest(text="Sorcerer", source_lang="en", target_lang="tr", engine=TranslationEngine.GEMINI)
+        result = asyncio.run(t.translate_single(req))
+        assert result.success is True
+        assert result.translated_text == "Sorcerer"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

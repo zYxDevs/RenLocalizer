@@ -125,7 +125,7 @@ def test_runtime_miss_logging_respects_limit(tmp_path: Path):
     for i in range(5):
         log_func("replace_text", f"Different text {i}", "exact_lookup_miss")
         
-    log_file = tmp_path / "game" / "tl" / "tr" / "diagnostics" / "runtime_missed_strings.jsonl"
+    log_file = tmp_path / "game" / "tl" / ".diagnostics" / "tr" / "runtime_missed_strings.jsonl"
     assert log_file.exists(), "Log file should be created"
     
     # Read the output
@@ -148,7 +148,7 @@ def test_runtime_miss_deduplication(tmp_path: Path):
     # Also log it from a different layer (which should be allowed once)
     log_func("say_menu_text_filter", "Duplicated miss", "no_exact_match_pre_interpolation")
     
-    log_file = tmp_path / "game" / "tl" / "tr" / "diagnostics" / "runtime_missed_strings.jsonl"
+    log_file = tmp_path / "game" / "tl" / ".diagnostics" / "tr" / "runtime_missed_strings.jsonl"
     content = log_file.read_text(encoding="utf-8").strip()
     lines = [line for line in content.split("\n") if line]
     
@@ -162,7 +162,7 @@ def test_runtime_miss_payload_structure(tmp_path: Path):
     
     log_func("replace_text", "Hello [player]", "unknown")
     
-    log_file = tmp_path / "game" / "tl" / "tr" / "diagnostics" / "runtime_missed_strings.jsonl"
+    log_file = tmp_path / "game" / "tl" / ".diagnostics" / "tr" / "runtime_missed_strings.jsonl"
     content = log_file.read_text(encoding="utf-8").strip()
     
     entry = json.loads(content)

@@ -546,19 +546,6 @@ class FakePass(FakeASTBase):
     pass
 
 
-class FakeTestcase(FakeASTBase):
-    """
-    Represents testcase statement (Ren'Py 8.x+).
-    Used for automated testing scenarios.
-    Example: testcase "test_menu" label start
-    """
-    def __init__(self):
-        super().__init__()
-        self.label: str = ""  # Target label for the test
-        self.options: Optional[str] = None  # Test options/configuration
-        self.block: List[Any] = []  # Test block content
-
-
 class FakeGeneric(FakeASTBase):
     """Generic fallback for unknown AST nodes."""
     def __init__(self):
@@ -801,18 +788,6 @@ class FakeSLDefault:
             self.__dict__.update(state)
 
 # SL2 (Screen Language 2) fake classes for Ren'Py 8.x
-class FakeSLDrag(FakeASTBase):
-    """Screen Language drag statement (new in 8.x)."""
-    def __init__(self):
-        super().__init__()
-        self.children: List[Any] = []
-        self.keyword: List[tuple] = []
-    
-    def __setstate__(self, state: dict) -> None:
-        if isinstance(state, dict):
-            self.__dict__.update(state)
-
-
 class FakeSLOnEvent(FakeASTBase):
     """Screen Language on event handler."""
     def __init__(self):
@@ -825,16 +800,6 @@ class FakeSLOnEvent(FakeASTBase):
             self.__dict__.update(state)
 
 
-class FakeSLBar(FakeASTBase):
-    """Screen Language bar/vbar with value."""
-    def __init__(self):
-        super().__init__()
-        self.positional: List[Any] = []
-        self.keyword: List[tuple] = []
-    
-    def __setstate__(self, state: dict) -> None:
-        if isinstance(state, dict):
-            self.__dict__.update(state)
 # Revertable containers from renpy.revertable / renpy.python
 class FakeRevertableList(list):
     """Ren'Py revertable list."""
@@ -1486,7 +1451,8 @@ class ASTTextExtractor:
             text_type = 'nvl_dialogue'
 
         # Duplicate handling: if we already have this text, prefer the one with variable context or data_string
-        key = (text, context, node_type or text_type)
+        is_dialogue = bool(character) or (text_type in ('dialogue', 'narration', 'extend', 'bubble_dialogue', 'nvl_dialogue')) or (node_type in ('Say', 'FakeSay', 'TranslateSay'))
+        key = (text, context, node_type or text_type, identifier or (line_number if is_dialogue else 0))
         existing = self.seen_map.get(key)
         # If existing has same (text, context) skip
         if existing:
@@ -1763,6 +1729,14 @@ class ASTTextExtractor:
             
             tree = ast.parse(dedented_code)
             
+            # Collect docstrings to ignore them completely (never extract function/module docstrings)
+            docstrings = set()
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    ds = ast.get_docstring(n, clean=False)
+                    if ds:
+                        docstrings.add(ds)
+            
             for node in ast.walk(tree):
                 # String constants (Python 3.8+ and older)
                 val = None
@@ -1773,6 +1747,10 @@ class ASTTextExtractor:
                 
                 if val:
                     # Extraction Rules for naked strings:
+                    # Skip docstrings and documentation directives (:doc:, :param:, etc.)
+                    if val in docstrings or ':doc:' in val or re.match(r'^\s*:(?:doc|param|return|type|rtype|class|func|var)\b', val):
+                        continue
+
                     # Naked strings in Python code are often technical IDs (pept, nifacecream).
                     # We only extract them if they look like real human-readable text.
                     

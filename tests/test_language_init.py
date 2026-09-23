@@ -54,3 +54,50 @@ def test_create_language_init_file_cleans_stale_init_files(tmp_path):
 
     assert not stale.exists(), "stale language init file should be removed"
     assert (game_dir / "zzz_turkish_language.rpy").exists()
+
+
+def test_generated_file_only_uses_names_the_game_has(tmp_path):
+    """
+    The init file runs inside the game, not inside RenLocalizer.
+
+    Its defensive `except` handlers used to call `logger.debug(...)`, a name the
+    Ren'Py runtime does not have — so any failure inside the try block raised
+    "NameError: name 'logger' is not defined" on top of it, during init.
+    """
+    import ast
+    import re
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    create_language_init_file(
+        str(game_dir), "turkish", ConfigManager(), lambda level, msg: None
+    )
+    content = (game_dir / "zzz_turkish_language.rpy").read_text(encoding="utf-8-sig")
+
+    code_only = "\n".join(
+        line for line in content.splitlines() if not line.strip().startswith("#")
+    )
+    assert "logger" not in code_only, "RenLocalizer's logger does not exist in the game"
+
+    # Every python block must at least parse on its own.
+    blocks = re.findall(r"^init python:\n((?:(?: {4}.*)?\n)+)", content, re.MULTILINE)
+    assert blocks, "the file should contain init python blocks"
+    for block in blocks:
+        dedented = "\n".join(line[4:] if line.startswith("    ") else line
+                             for line in block.splitlines())
+        ast.parse(dedented)
+
+
+def test_generated_file_declares_no_game_variables(tmp_path):
+    """It may set the language; it must never define or assign game state."""
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    create_language_init_file(
+        str(game_dir), "turkish", ConfigManager(), lambda level, msg: None
+    )
+    content = (game_dir / "zzz_turkish_language.rpy").read_text(encoding="utf-8-sig")
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("label ", "jump ", "call ", "$ ", "default ")):
+            raise AssertionError(f"unexpected game statement: {stripped}")

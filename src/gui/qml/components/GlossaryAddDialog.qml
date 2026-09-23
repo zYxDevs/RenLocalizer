@@ -90,7 +90,7 @@ Dialog {
                 Layout.fillWidth: true
 
                 Label {
-                    text: addGlossaryDialog.cleanTitle(appBackend.uiTrigger, appBackend.getTextWithDefault("glossary_dlg_add_title", "Sözlüğe Terim Ekle"))
+                    text: appBackend.uiTrigger, addGlossaryDialog.cleanTitle(appBackend.getTextWithDefault("glossary_dlg_add_title", "Sözlüğe Terim Ekle"))
                     font.pixelSize: 17; font.bold: true; color: addGlossaryDialog.clrTxt
                 }
                 Label {

@@ -19,7 +19,7 @@ from .constants import (
     VISIBLE_TEXT_SENTENCE_RE, VISIBLE_TEXT_BRIDGE_PREFIXES,
     TRANSLATION_ID_KEY_RE, COVERAGE_WARNING_UI_KEYS, is_rtl_language,
 )
-from .translating import classify_translation_corruption
+from .translating import classify_translation_corruption, normalize_outer_color_wrapper
 from .validating import is_runtime_hook_enabled as _is_runtime_hook_enabled
 
 logger = logging.getLogger(__name__)
@@ -265,10 +265,34 @@ def _build_runtime_observed_alias(observed_text: str, source_text: str, translat
     return observed[:start] + translated + observed[end:]
 
 
+def get_diagnostics_dir(lang_dir: str, target_language: Optional[str] = None) -> str:
+    """
+    Returns the isolated diagnostics directory path outside tl/<lang>/.
+    Ren'Py ignores directories starting with a dot ('.').
+    Structure: <tl_parent_or_tl>/.diagnostics/<lang>/
+    """
+    lang_path = Path(lang_dir)
+    lang_name = target_language or lang_path.name
+    if lang_path.parent.name == 'tl':
+        base_dir = lang_path.parent
+    elif lang_path.name == 'tl':
+        base_dir = lang_path
+    else:
+        base_dir = lang_path
+    diag_dir = os.path.join(str(base_dir), '.diagnostics', lang_name)
+    os.makedirs(diag_dir, exist_ok=True)
+    return diag_dir
+
+
 def synthesize_runtime_observed_variants(mapping: Dict[str, str], lang_dir: str, is_aggressive: bool = False) -> Dict[str, str]:
-    log_path = Path(lang_dir) / 'diagnostics' / 'runtime_missed_strings.jsonl'
+    diag_dir = get_diagnostics_dir(lang_dir)
+    log_path = Path(diag_dir) / 'runtime_missed_strings.jsonl'
     if not log_path.is_file():
-        return {}
+        legacy_path = Path(lang_dir) / 'diagnostics' / 'runtime_missed_strings.jsonl'
+        if legacy_path.is_file():
+            log_path = legacy_path
+        else:
+            return {}
 
     analysis = analyze_runtime_miss_log(str(log_path))
     additions: Dict[str, str] = {}
@@ -359,8 +383,7 @@ def write_translation_reports(lang_dir: str, target_language: str, diagnostic_re
                                 translation_guard_sample_limit, log_emit, config) -> Optional[str]:
     from src.utils.encoding import save_text_safely
 
-    diag_dir = os.path.join(lang_dir, 'diagnostics')
-    os.makedirs(diag_dir, exist_ok=True)
+    diag_dir = get_diagnostics_dir(lang_dir, target_language)
     diag_path = os.path.join(diag_dir, f'diagnostic_{target_language}.json')
     diagnostic_report.write(diag_path)
     log_emit('info', config.get_log_text('log_diagnostic_written', path=diag_path))
@@ -373,6 +396,16 @@ def write_translation_reports(lang_dir: str, target_language: str, diagnostic_re
         'samples': translation_guard_events,
     }
     save_text_safely(Path(report_path), json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    # Clean up legacy diagnostics directory inside tl/<lang>/ if present
+    legacy_diag_dir = os.path.join(lang_dir, 'diagnostics')
+    if os.path.isdir(legacy_diag_dir):
+        try:
+            import shutil
+            shutil.rmtree(legacy_diag_dir)
+        except Exception:
+            pass
+
     return diag_path
 
 
@@ -553,7 +586,7 @@ init python:
             if current != "{language_code}":
                 renpy.change_language("{language_code}")
         except Exception:
-            logger.debug("Template string reference evaluation failed")
+            pass
 
     if _rl_force_{safe_code}_language not in config.start_callbacks:
         config.start_callbacks.append(_rl_force_{safe_code}_language)
@@ -570,7 +603,7 @@ init python:
         if hasattr(persistent, "selected_language"):
             persistent.selected_language = "{language_code}"
     except Exception:
-        logger.debug("Template string persistent reference evaluation failed")
+        pass
 {rtl_phase}'''
         save_text_safely(Path(init_file), content, encoding='utf-8-sig', newline='\n')
         log_emit("info", config.get_ui_text("pipeline_lang_init_created").replace("{path}", init_file))
@@ -619,6 +652,9 @@ def _extract_raw_mapping(
         orig = (original or '').strip()
         trans = (translated or '').strip()
         if not orig or not trans or orig == trans or TRANSLATION_ID_KEY_RE.fullmatch(orig):
+            return
+        trans = normalize_outer_color_wrapper(orig, trans)
+        if orig == trans:
             return
         reason = classify_translation_corruption(orig, trans)
         if reason is not None:
@@ -765,6 +801,8 @@ def _expand_synthesized_variants(
                             )
                         except Exception:
                             active_logger.debug("diagnostic mark_written failed for key=%s", key)
+                if diagnostic_report and hasattr(diagnostic_report, 'record_alias_kind'):
+                    diagnostic_report.record_alias_kind(detail_name, len(additions))
                 active_logger.info(f"strings.json: {len(additions)} {detail_name} synthesized for runtime coverage")
         except Exception as e:
             active_logger.debug(f"strings.json {detail_name} synthesis skipped: {e}")
@@ -802,6 +840,8 @@ def _expand_runtime_observed_variants(
                         )
                     except Exception:
                         active_logger.debug("diagnostic mark_written failed for key=%s", key)
+            if diagnostic_report and hasattr(diagnostic_report, 'record_alias_kind'):
+                diagnostic_report.record_alias_kind('runtime_observed_variant', len(runtime_observed_additions))
             active_logger.info(f"strings.json: {len(runtime_observed_additions)} runtime-observed aliases synthesized from missed-string diagnostics")
     except Exception as e:
         active_logger.debug(f"strings.json runtime-observed synthesis skipped: {e}")
@@ -824,8 +864,7 @@ def _write_skipped_corruption_report(
         active_logger.info(f"strings.json: Corruption reasons -> {reason_summary}")
     try:
         from src.utils.encoding import save_text_safely
-        diag_dir = os.path.join(lang_dir, 'diagnostics')
-        os.makedirs(diag_dir, exist_ok=True)
+        diag_dir = get_diagnostics_dir(lang_dir)
         report_path = os.path.join(diag_dir, 'strings_json_skipped_corruptions.json')
         payload = {
             'generated_at': int(time.time()),
@@ -878,6 +917,22 @@ def generate_strings_json(
 ) -> Optional[int]:
     """Coordinates the generation, synthesis, and saving of strings.json."""
     active_logger = logger_override or logger
+    ts = getattr(config, 'translation_settings', None) if config else None
+    output_mode = getattr(ts, 'output_mode', 'strings') if ts else 'strings'
+    if output_mode == 'native':
+        # Native TLID mode generates native .rpy translation blocks and deletes the runtime hook.
+        # strings.json is completely unneeded by Ren'Py and causes severe lag on Ren'Py 7.
+        # Clean up any stale strings.json from lang_dir to keep tl/<lang> clean.
+        stale_json = os.path.join(lang_dir, "strings.json")
+        if os.path.exists(stale_json):
+            try:
+                os.remove(stale_json)
+                if log_emit and config and hasattr(config, 'get_log_text'):
+                    log_emit('info', config.get_log_text('log_stale_strings_json_removed', 'Removed unneeded strings.json for Native TLID mode'))
+            except Exception as ex:
+                active_logger.debug(f"Failed to remove stale strings.json: {ex}")
+        return 0
+
     try:
         mapping, skipped_corrupt, skipped_counts, skipped_samples = _extract_raw_mapping(
             tl_files, extra_translations, active_logger

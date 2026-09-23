@@ -93,3 +93,41 @@ class TestActiveTranslatorRefresh:
         new = stub.translation_manager.translators[TranslationEngine.OPENAI]
         assert new is not old
         assert new._base_url == "http://localhost:1234/v1"
+
+    def test_refresh_attaches_google_fallback_to_gemini(self):
+        """GUI-built Gemini translators must carry the Google fallback (safety/quota/placeholder recovery)."""
+        import pytest
+        from src.core.ai_translator import _GEMINI_AVAILABLE
+        if not _GEMINI_AVAILABLE:
+            pytest.skip("google-genai not installed")
+        from src.core.translator import GoogleTranslator
+
+        stub = _make_backend_stub()
+        stub.config.api_keys.gemini_api_key = "fake-key"
+        stub.config.translation_settings.gemini_model = "gemini-2.5-flash"
+        stub.config.translation_settings.gemini_safety_settings = "BLOCK_NONE"
+        stub._selected_engine = TranslationEngine.GEMINI
+
+        google = GoogleTranslator(config_manager=None)
+        stub.translation_manager.add_translator(TranslationEngine.GOOGLE, google)
+
+        stub._refresh_active_translator()
+        gemini = stub.translation_manager.translators[TranslationEngine.GEMINI]
+        assert gemini.fallback_translator is google
+        assert gemini._safety_level == "BLOCK_NONE"
+
+    def test_refresh_builds_bing_with_google_fallback(self):
+        from src.core.translator import BingTranslator, GoogleTranslator
+
+        stub = _make_backend_stub()
+        stub._selected_engine = TranslationEngine.BING
+        for name in ("_setup_bing_translator",):
+            from src.backend.app_backend import AppBackend
+            setattr(stub, name, getattr(AppBackend, name).__get__(stub))
+        google = GoogleTranslator(config_manager=None)
+        stub.translation_manager.add_translator(TranslationEngine.GOOGLE, google)
+
+        stub._refresh_active_translator()
+        bing = stub.translation_manager.translators[TranslationEngine.BING]
+        assert isinstance(bing, BingTranslator)
+        assert bing.fallback_translator is google

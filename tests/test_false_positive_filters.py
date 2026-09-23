@@ -485,3 +485,31 @@ class TestParserParity:
             assert parser._is_wrapped_heading(text) == fmt._is_wrapped_heading(text), (
                 f"Parser/formatter disagreement on {text!r}"
             )
+
+
+# ==================================================================
+# v2.8.17: PYTHON STATEMENT BOUNDARIES (raise, import natural phrases)
+# ==================================================================
+class TestPythonStatementBoundaries:
+    """Verifies that natural language containing 'raise' or 'import'
+    is not falsely detected as Python code."""
+
+    @pytest.mark.parametrize("text", [
+        "My lord, hear my oath. I will not harm you, or the members of your house while we rest in this place; may all the gods strike me down if I raise my hand against you.",
+        "Let us raise our glasses to the future.",
+        "They will raise a hand against us.",
+        "We must pay the import duties on these goods.",
+    ])
+    def test_natural_language_not_skipped(self, fmt, text):
+        assert fmt._should_skip_translation(text) is False, f"Should NOT skip: {text}"
+
+    @pytest.mark.parametrize("text", [
+        "raise ValueError('Invalid argument')",
+        "raise e",
+        "raise Exception",
+        "import os",
+        "import sys",
+    ])
+    def test_actual_python_code_skipped(self, fmt, text):
+        assert fmt._should_skip_translation(text) is True, f"Should skip: {text}"
+

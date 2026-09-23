@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Lord0fTurk/RenLocalizer/releases"><img alt="Latest Release" src="https://img.shields.io/badge/Release-v2.8.16-blue?style=for-the-badge&logo=github"></a>
+  <a href="https://github.com/Lord0fTurk/RenLocalizer/releases"><img alt="Latest Release" src="https://img.shields.io/badge/Release-v2.8.17-blue?style=for-the-badge&logo=github"></a>
   <a href="https://www.patreon.com/cw/LordOfTurk"><img alt="Support on Patreon" src="https://img.shields.io/badge/Support-Patreon-ff424d?style=for-the-badge&logo=patreon"></a>
 </p>
 
@@ -55,10 +55,12 @@ Pick the engine that best fits your needs — from 100% free cloud translation t
 | Engine | Setup Required | Cost | Best For |
 | :--- | :---: | :---: | :--- |
 | 🌍 **Google Translate** | **Zero Setup** | **100% Free** | Instant translation, no API keys, built-in 13 mirror rotation. |
+| 🪟 **Bing / Microsoft Edge** | **Zero Setup** | **100% Free** | Keyless Microsoft Translator via the Edge web endpoint — independent from Google's rate limits, automatic Google fallback. |
 | 🧠 **OpenAI (GPT-4o / Mini)** | API Key | Paid API | High-accuracy literary translations and nuanced dialogue. |
 | ⚡ **DeepSeek (V3 / R1)** | API Key | Very Low Cost | Outstanding translation quality with OpenAI-compatible API. |
 | 💎 **Google Gemini** | API Key | Free Tier / Paid | High-speed, context-rich translations with large context windows. |
 | 🏠 **Local LLM (Ollama / LM Studio)** | Local App | **100% Free** | Fully offline, private, uncensored translation (e.g. Llama 3, Qwen 2.5). |
+| 📦 **Built-in GGUF Runner** | **Zero Setup** | **100% Free** | Point at a `.gguf` file and RenLocalizer runs llama.cpp for you — no Ollama or LM Studio install. |
 | 🎯 **Tencent Hy-MT2** | Ollama / LM Studio | **100% Free** | Specialized translation profile with official model-card sampling recipe. |
 | 🐳 **LibreTranslate** | Self-hosted | Free | Self-hosted local Docker translation service. |
 
@@ -159,3 +161,21 @@ Contributions, bug reports, and feature requests are very welcome!
 - 📖 **Documentation:** Visit the [Wiki Guide](https://github.com/Lord0fTurk/RenLocalizer/wiki)
 - 💖 **Support Development:** Join us on [Patreon](https://www.patreon.com/cw/LordOfTurk)
 - 📜 **License:** Released under the [GNU General Public License v3.0](LICENSE)
+
+---
+
+## 📦 Third-Party Components
+
+RenLocalizer builds on the work of these open-source projects:
+
+| Project | License | Used for |
+| :--- | :---: | :--- |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | MIT | Built-in GGUF runner — the official `llama-server` build is downloaded on request (verified by SHA256) and managed by RenLocalizer; it is **not** bundled with the release. |
+| [PyQt6 / Qt](https://www.qt.io) | GPL-3.0 / LGPL-3.0 | Desktop interface (QML) |
+| [unrpa](https://github.com/Lattyware/unrpa) | GPL-3.0 | `.rpa` archive extraction |
+| [rpycdec](https://pypi.org/project/rpycdec/) | MIT | Complementary `.rpyc` decompilation |
+| [rich](https://github.com/Textualize/rich) | MIT | CLI interface |
+
+Translation engines are used through their public endpoints or official SDKs
+(Google Translate, Microsoft Translator via the Edge endpoint, DeepL,
+LibreTranslate, OpenAI, Google Gemini, DeepSeek).
