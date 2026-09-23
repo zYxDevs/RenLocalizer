@@ -53,12 +53,24 @@ class FakeResponse:
         return False
 
 
-def _zip_bytes(names) -> bytes:
+def _archive_bytes(names, asset_name: str = "") -> bytes:
     buffer = io.BytesIO()
+    if asset_name and (asset_name.endswith(".tar.gz") or asset_name.endswith(".tgz")):
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tf:
+            for name in names:
+                data = b"binary"
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        return buffer.getvalue()
     with zipfile.ZipFile(buffer, "w") as zf:
         for name in names:
             zf.writestr(name, "binary")
     return buffer.getvalue()
+
+
+_zip_bytes = _archive_bytes
+
 
 
 def _asset_for(payload: bytes, name="llama-test.zip") -> RuntimeAsset:
@@ -116,8 +128,9 @@ class TestRuntimeDownload:
 
     def test_downloads_verifies_and_extracts(self, tmp_path, monkeypatch):
         exe = lls._server_exe_name()
-        payload = _zip_bytes([f"build/bin/{exe}", "build/bin/libllama.dll"])
-        asset = _asset_for(payload, resolve_asset_name("cpu"))
+        asset_name = resolve_asset_name("cpu")
+        payload = _archive_bytes([f"build/bin/{exe}", "build/bin/libllama.dll"], asset_name)
+        asset = _asset_for(payload, asset_name)
         release = self._release_payload(asset)
 
         monkeypatch.setattr(lls, "runtime_root", lambda: tmp_path)
@@ -136,9 +149,10 @@ class TestRuntimeDownload:
         assert manager.download_runtime("cpu") == binary
 
     def test_checksum_mismatch_aborts_and_cleans_up(self, tmp_path, monkeypatch):
-        payload = _zip_bytes([lls._server_exe_name()])
+        asset_name = resolve_asset_name("cpu")
+        payload = _archive_bytes([lls._server_exe_name()], asset_name)
         asset = RuntimeAsset(
-            name=resolve_asset_name("cpu"),
+            name=asset_name,
             url="https://example.invalid/a.zip",
             size=len(payload),
             sha256="0" * 64,  # wrong on purpose
@@ -167,8 +181,9 @@ class TestRuntimeDownload:
             manager.download_runtime("cpu")
 
     def test_archive_without_server_binary_is_rejected(self, tmp_path, monkeypatch):
-        payload = _zip_bytes(["build/bin/README.txt"])
-        asset = _asset_for(payload, resolve_asset_name("cpu"))
+        asset_name = resolve_asset_name("cpu")
+        payload = _archive_bytes(["build/bin/README.txt"], asset_name)
+        asset = _asset_for(payload, asset_name)
         monkeypatch.setattr(lls, "runtime_root", lambda: tmp_path)
         responses = [FakeResponse(self._release_payload(asset)), FakeResponse(payload)]
         monkeypatch.setattr(
@@ -525,10 +540,10 @@ class TestPinnedBuildFallback:
         self, tmp_path, monkeypatch
     ):
         exe = lls._server_exe_name()
-        payload = _zip_bytes([f"build/bin/{exe}"])
-        digest = hashlib.sha256(payload).hexdigest()
         newer_build = "b99999"
         newer_name = resolve_asset_name("cpu", build=newer_build)
+        payload = _archive_bytes([f"build/bin/{exe}"], newer_name)
+        digest = hashlib.sha256(payload).hexdigest()
 
         pinned_release = json.dumps({"assets": []}).encode()
         listing = json.dumps([{

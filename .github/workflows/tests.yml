@@ -57,8 +57,14 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          QSG_RHI_BACKEND: software
         run: |
-          python -m pytest tests/ -q --rootdir .
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a python -m pytest tests/ -q --rootdir .
+          else
+            python -m pytest tests/ -q --rootdir .
+          fi
 
       - name: Smoke test source Qt startup (Linux)
         if: runner.os == 'Linux'
@@ -105,9 +111,11 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          QSG_RHI_BACKEND: software
         run: |
           . venv/bin/activate
-          python -m pytest tests/ -q --rootdir .
+          xvfb-run -a python -m pytest tests/ -q --rootdir .
 
   linux-pyqt-compat:
     name: Linux source compatibility (PyQt6 ${{ matrix.pyqt6-version }})
@@ -170,8 +178,10 @@ jobs:
       - name: Run compatibility regression suite
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          QSG_RHI_BACKEND: software
         run: |
-          python -m pytest tests/ -q --rootdir .
+          xvfb-run -a python -m pytest tests/ -q --rootdir .
 
       - name: Smoke test source Qt startup
         run: |
