@@ -129,13 +129,26 @@ class GlossaryManager:
             if not pattern.search(result):
                 continue
 
+            # Detect spans already guarded by syntax guard (<ph id="...">...</ph> or ⟦...⟧)
+            # Never inject glossary placeholders inside existing placeholders (avoids nested corruption)
+            protected_spans = [
+                (m.start(), m.end())
+                for m in re.finditer(r'<ph\b[^>]*>.*?</ph>|\u27e6[^\u27e7]*\u27e7', result, re.DOTALL)
+            ]
+
             def replace_func(
                 match,
                 _counter=[counter],
                 _xml=xml_mode,
                 _dst=dst,
                 _ns=token_namespace,
+                _spans=protected_spans,
             ):
+                start, end = match.start(), match.end()
+                for ps, pe in _spans:
+                    if ps <= start and end <= pe:
+                        return match.group(0)  # Inside an existing protected placeholder, skip!
+
                 matched_text = match.group(0)
                 idx = _counter[0]
                 _counter[0] += 1

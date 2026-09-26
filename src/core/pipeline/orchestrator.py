@@ -2335,6 +2335,11 @@ class TranslationPipeline(QObject):
                             original=entry.original_text, translated=restored,
                             file_path=entry.file_path, translation_id=tid, line_number=entry.line_number,
                         )
+                        cache_key = (
+                            self.translation_manager._cache_key_for(request)
+                            if request is not None
+                            else (getattr(self.engine, 'value', str(self.engine)), api_source_lang, api_target_lang, entry.original_text)
+                        )
                         if blocked_reason is not None:
                             guard_reason_text = self._get_guard_reason_text(blocked_reason)
                             self.log_message.emit("guard", self.config.get_log_text(
@@ -2342,6 +2347,17 @@ class TranslationPipeline(QObject):
                                 'Guard kept original text after suspicious translator output ({reason}) in {path}:{line}',
                                 reason=guard_reason_text, path=entry.file_path, line=entry.line_number,
                             ))
+                            # Evict corrupted output from cache so it never poisons persistent storage
+                            try:
+                                loop.run_until_complete(self.translation_manager.cache_remove(cache_key))
+                            except Exception:
+                                pass
+                        elif was_normalized or retry_recovered:
+                            # Update cache entry with cleaned or normalized translation
+                            try:
+                                loop.run_until_complete(self.translation_manager.cache_update_text(cache_key, restored))
+                            except Exception:
+                                pass
 
                         if restored:
                             translations[tid] = restored
@@ -2417,7 +2433,7 @@ class TranslationPipeline(QObject):
                     if _seg_added:
                         self.emit_log("debug", f"[AtomicSegments] {_seg_added} individual segment translations registered from delimiter groups")
 
-                if current % 500 == 0:
+                if current % 100 == 0:
                     self.translation_manager.save_cache(cache_file)
                     self.emit_log("debug", f"Checkpoint saved: {cache_file} (Progress: {current}/{total})")
 
@@ -2454,6 +2470,10 @@ class TranslationPipeline(QObject):
                 self.log_message.emit("debug", f"[ExternalTM] Total TM entries in memory: {_tm_stats['entries']} from {_tm_stats['sources']} source(s)")
 
         finally:
+            try:
+                self.translation_manager.save_cache(cache_file)
+            except Exception as _fce:
+                self.logger.debug(f"Finally cache save notice: {_fce}")
             try:
                 if loop.is_running():
                     pass

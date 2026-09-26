@@ -304,3 +304,97 @@ class TestUnescapeMatchesRenPyDequote(unittest.TestCase):
     def test_non_ascii_is_preserved(self):
         self.assertEqual(RenPyParser._safe_unescape('Türkçe — test'), 'Türkçe — test')
         self.assertEqual(RenPyParser._safe_unescape('Привет 世界'), 'Привет 世界')
+
+class TestLinearLabelScopingAndTLID(unittest.TestCase):
+    def test_indented_labels_retain_linear_scoping(self):
+        import tempfile
+        code = (
+            "label start:\n"
+            "    \"Start dialogue.\"\n"
+            "    label chapter1:\n"
+            "        if True:\n"
+            "            \"Inside if.\"\n"
+            "        \"Outside if but still in chapter1.\"\n"
+            "    label chapter2:\n"
+            "        \"Chapter 2 dialogue.\"\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".rpy", delete=False, encoding="utf-8") as tf:
+            tf.write(code)
+            tmp_name = tf.name
+
+        try:
+            parser = RenPyParser()
+            entries = parser.extract_text_entries(tmp_name)
+            self.assertEqual(len(entries), 4)
+
+            # 1. Start dialogue should be under label:start
+            self.assertEqual(entries[0]["text"], "Start dialogue.")
+            self.assertIn("label:start", entries[0]["context_path"])
+
+            # 2. Inside if should have label:chapter1 (and if:)
+            self.assertEqual(entries[1]["text"], "Inside if.")
+            self.assertIn("label:chapter1", entries[1]["context_path"])
+
+            # 3. Outside if should still have label:chapter1 (not reverted to start)
+            self.assertEqual(entries[2]["text"], "Outside if but still in chapter1.")
+            self.assertIn("label:chapter1", entries[2]["context_path"])
+            self.assertNotIn("label:start", entries[2]["context_path"])
+
+            # 4. Chapter 2 should clear chapter1 and have label:chapter2
+            self.assertEqual(entries[3]["text"], "Chapter 2 dialogue.")
+            self.assertIn("label:chapter2", entries[3]["context_path"])
+            self.assertNotIn("label:chapter1", entries[3]["context_path"])
+        finally:
+            import os
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+    def test_local_sublabel_resolution(self):
+        import tempfile
+        code = (
+            "label main:\n"
+            "    \"Main dialogue.\"\n"
+            "    label .subpart:\n"
+            "        \"Subpart dialogue.\"\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".rpy", delete=False, encoding="utf-8") as tf:
+            tf.write(code)
+            tmp_name = tf.name
+
+        try:
+            parser = RenPyParser()
+            entries = parser.extract_text_entries(tmp_name)
+            self.assertEqual(len(entries), 2)
+            self.assertIn("label:main", entries[0]["context_path"])
+            self.assertIn("label:main.subpart", entries[1]["context_path"])
+        finally:
+            import os
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+    def test_native_tlid_picks_innermost_active_label(self):
+        from src.core.pipeline.extraction import generate_native_tlid_content
+
+        entries = [
+            {
+                "text_type": "dialogue",
+                "character": "e",
+                "text": "Hello world",
+                "line_number": 10,
+                "context_path": ["label:start", "label:intro_scene"],
+            }
+        ]
+        content = generate_native_tlid_content(
+            entries=entries,
+            game_dir="d:/fake_game",
+            target_language="turkish",
+        )
+
+        # Must generate translate turkish intro_scene_<hash>: not start_<hash>:
+        self.assertIn("translate turkish intro_scene_", content)
+        self.assertNotIn("translate turkish start_", content)
+

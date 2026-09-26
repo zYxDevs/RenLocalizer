@@ -22,12 +22,19 @@ from .base import (
 from .google import GoogleTranslator
 from .services import DeepLTranslator, LibreTranslateTranslator, BingTranslator
 
-_PROTECTED_TEXT_MARKERS = ('<ph id=', '⟦', '__PH_')
+_CORRUPT_OR_PROTECTED_CACHE_RE = re.compile(
+    r'<ph\b|\bph\s*>|</\s*ph\s*>|\u27e6|\u27e7|__PH_\d+__|XRPYX_|RLPH[0-9A-F]{3,}'
+)
 
 
-def _is_protected_cache_text(text: str) -> bool:
-    """True for keys written under placeholder-protected text (pre-2.8.17)."""
-    return any(marker in text for marker in _PROTECTED_TEXT_MARKERS)
+def _is_corrupt_or_protected_cache_text(text: str) -> bool:
+    """True for keys or values containing leaked placeholder tokens or XML remnants."""
+    if not text:
+        return False
+    return bool(_CORRUPT_OR_PROTECTED_CACHE_RE.search(text))
+
+
+_is_protected_cache_text = _is_corrupt_or_protected_cache_text
 
 
 class TranslationManager:
@@ -145,11 +152,32 @@ class TranslationManager:
     async def _cache_put(self, key: Tuple[str, str, str, str], val: TranslationResult):
         if not self.use_cache or not val.success:
             return
+        # Do not cache corrupt translations that leaked placeholders or tokens
+        if _is_corrupt_or_protected_cache_text(key[3]) or _is_corrupt_or_protected_cache_text(val.translated_text):
+            return
         async with self._cache_lock:
             self._cache[key] = val
             self._cache.move_to_end(key)
             if len(self._cache) > self.cache_capacity:
                 self._cache.popitem(last=False)
+
+    async def cache_remove(self, key: Tuple[str, str, str, str]):
+        """Remove a specific key from memory cache (e.g. when rejected by output guard)."""
+        async with self._cache_lock:
+            self._cache.pop(key, None)
+
+    async def cache_update_text(self, key: Tuple[str, str, str, str], updated_translated_text: str):
+        """Update cached translation text with cleaned/normalized output from pipeline."""
+        if not self.use_cache:
+            return
+        if _is_corrupt_or_protected_cache_text(key[3]) or _is_corrupt_or_protected_cache_text(updated_translated_text):
+            await self.cache_remove(key)
+            return
+        async with self._cache_lock:
+            cached = self._cache.get(key)
+            if cached:
+                cached.translated_text = updated_translated_text
+                self._cache.move_to_end(key)
 
     def _build_cache_hit_projection(
         self,
@@ -577,6 +605,10 @@ class TranslationManager:
             for key, val in self._cache.items():
                 try:
                     engine_str, sl, tl, text = key
+                    tr_text = val.translated_text or ""
+                    # Never persist corrupt translations containing placeholder remnants or unclosed tags
+                    if _is_corrupt_or_protected_cache_text(text) or _is_corrupt_or_protected_cache_text(tr_text):
+                        continue
 
                     if engine_str not in data:
                         data[engine_str] = {}
@@ -590,7 +622,7 @@ class TranslationManager:
                         sl_dict[tl] = {}
 
                     tl_dict = sl_dict[tl]
-                    tl_dict[text] = val.translated_text
+                    tl_dict[text] = tr_text
                 except (ValueError, TypeError, KeyError):
                     continue
 
@@ -657,10 +689,10 @@ class TranslationManager:
                         if not isinstance(text_map, dict):
                             continue
                         for text, translated in text_map.items():
-                            if _is_protected_cache_text(text):
-                                # Written by a pre-2.8.17 build under the
-                                # protected text; no lookup can ever match it,
-                                # so drop it instead of spending capacity.
+                            tr_str = str(translated) if translated is not None else ""
+                            if _is_corrupt_or_protected_cache_text(text) or _is_corrupt_or_protected_cache_text(tr_str):
+                                # Written by previous builds or corrupted outputs;
+                                # drop it so clean fresh translations can be produced.
                                 skipped_protected += 1
                                 continue
                             key = (engine_str, sl, tl, text)
@@ -671,7 +703,7 @@ class TranslationManager:
 
                             res = TranslationResult(
                                 original_text=text,
-                                translated_text=str(translated),
+                                translated_text=tr_str,
                                 source_lang=sl,
                                 target_lang=tl,
                                 engine=engine_enum,
@@ -686,7 +718,7 @@ class TranslationManager:
 
             if skipped_protected:
                 self.logger.info(
-                    "Dropped %d unusable cache entries written under placeholder-protected text",
+                    "Dropped %d corrupted or placeholder-leaked cache entries",
                     skipped_protected,
                 )
             self.logger.info(f"Cache loaded: {file_path} ({count} entries)")

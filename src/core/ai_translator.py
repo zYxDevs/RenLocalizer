@@ -1384,6 +1384,8 @@ class AsyncBaseAITranslator(BaseTranslator):
 
             for i, (orig_idx, req) in enumerate(chunk):
                 src_text = source_list[i]
+                req_meta = req.metadata if isinstance(req.metadata, dict) else {}
+                real_orig = req_meta.get('original_text') or src_text
                 translated_raw = parsed[i]
                 if translated_raw is None:
                     # Fallback to individual translate
@@ -1395,7 +1397,7 @@ class AsyncBaseAITranslator(BaseTranslator):
                     translated = restore_renpy_syntax_xml(translated_raw.strip(), placeholder_list[i])
                     missing = validate_translation_integrity(translated, placeholder_list[i])
                     if missing:
-                        translated = src_text
+                        translated = real_orig
                 else:
                     unmapped_raw = self._map_ascii_to_unicode_placeholders(translated_raw.strip(), ascii_maps_list[i])
                     translated = restore_renpy_syntax(unmapped_raw, placeholder_list[i])
@@ -1413,13 +1415,13 @@ class AsyncBaseAITranslator(BaseTranslator):
                             )
                             recovered = restore_renpy_syntax(recovered, placeholder_list[i])
                             still_missing = validate_translation_integrity(recovered, placeholder_list[i])
-                            translated = recovered if not still_missing else src_text
+                            translated = recovered if not still_missing else real_orig
                 
                 # Clean any leftover orphaned/mangled placeholder residues at the very end
                 translated = _clean_orphaned_placeholders(translated)
 
                 results[orig_idx] = TranslationResult(
-                    src_text, translated, req.source_lang, req.target_lang,
+                    real_orig, translated, req.source_lang, req.target_lang,
                     self._engine, True, confidence=0.9, metadata=req.metadata,
                 )
 
@@ -1643,12 +1645,15 @@ def _build_gemini_safety_settings(safety_level: str = "BLOCK_NONE") -> List[Any]
     ]
 
 
-def _build_gemini_thinking_config() -> Optional[Any]:
+def _build_gemini_thinking_config(model: Optional[str] = None) -> Optional[Any]:
     """
     Returns ThinkingConfig with thinking_budget=0 for translation tasks.
     Prevents reasoning models (gemini-3.1-flash-lite, gemini-2.5-flash) from
     consuming unnecessary thought tokens or stalling response.text.
+    Skips 1.x models which do not support ThinkingConfig.
     """
+    if model and ("1.5" in model.lower() or "1.0" in model.lower()):
+        return None
     if _GEMINI_MODE == "google_genai" and genai is not None and hasattr(genai, "types") and hasattr(genai.types, "ThinkingConfig"):
         try:
             return genai.types.ThinkingConfig(thinking_budget=0)
@@ -1795,7 +1800,7 @@ class GeminiTranslator(BaseTranslator):
         if safety_settings:
             kwargs["safety_settings"] = safety_settings
 
-        thinking_cfg = _build_gemini_thinking_config()
+        thinking_cfg = _build_gemini_thinking_config(self._model)
         if thinking_cfg is not None:
             kwargs["thinking_config"] = thinking_cfg
 

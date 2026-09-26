@@ -712,12 +712,12 @@ def generate_native_tlid_content(
             ctx_path = entry.get('context_path', [])
 
             if ctx and 'label:' in str(ctx):
-                for part in str(ctx).split('/'):
+                for part in reversed(str(ctx).split('/')):
                     if part.startswith('label:'):
                         label = part.replace('label:', '')
                         break
             elif ctx_path:
-                for p in ctx_path:
+                for p in reversed(ctx_path):
                     if p.lower().startswith('label:'):
                         label = p.replace('label:', '').replace('Label:', '')
                         break

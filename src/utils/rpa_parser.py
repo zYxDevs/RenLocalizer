@@ -12,6 +12,7 @@ Used when:
 import os
 import pickle
 import zlib
+import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, BinaryIO
@@ -85,12 +86,35 @@ def _safe_loads_rpa_index(data: bytes):
     return _RestrictedRPAUnpickler(io.BytesIO(data)).load()
 
 
+def _archive_index_keystream(key: int, length: int) -> bytes:
+    """
+    Derives a `length`-byte keystream from `key` using SHA-256 blocks.
+    Used by games (e.g. Harem Corruption / HHH-1.0 and similar obfuscated archives)
+    to deobfuscate the compressed archive index.
+    """
+    seed = key.to_bytes(8, "big") if isinstance(key, int) else key
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out += hashlib.sha256(seed + counter.to_bytes(4, "big")).digest()
+        counter += 1
+    return bytes(out[:length])
+
+
+def _archive_index_xor(data: bytes, key: int) -> bytes:
+    """XORs data with SHA-256 derived keystream."""
+    ks = _archive_index_keystream(key, len(data))
+    n = len(data)
+    return (int.from_bytes(data, "big") ^ int.from_bytes(ks, "big")).to_bytes(n, "big")
+
+
 class RPAParser:
-    """Native RPA archive parser supporting RPAv2 and RPAv3 formats."""
+    """Native RPA archive parser supporting RPAv2, RPAv3 and custom/obfuscated RPA formats (e.g. HHH-1.0)."""
     
-    # RPA format signatures
+    # Standard and known format signatures
     RPA3_SIGNATURE = b"RPA-3.0"
     RPA2_SIGNATURE = b"RPA-2.0"
+    HHH1_SIGNATURE = b"HHH-1.0"
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -112,81 +136,133 @@ class RPAParser:
         
         try:
             with open(rpa_path, 'rb') as f:
-                # Read header to determine format
                 header = f.readline()
-                
-                if header.startswith(self.RPA3_SIGNATURE):
-                    return self._extract_rpa3(f, header, output_dir)
-                elif header.startswith(self.RPA2_SIGNATURE):
-                    return self._extract_rpa2(f, header, output_dir)
-                else:
-                    self.logger.error(f"Unknown RPA format: {header[:20]}")
-                    return False
+                return self._extract_from_header(f, header, output_dir)
                     
         except Exception as e:
             self.logger.error(f"Error extracting {rpa_path}: {e}")
             import traceback
             self.logger.debug(traceback.format_exc())
             return False
-    
-    def _extract_rpa3(self, f: BinaryIO, header: bytes, output_dir: Path) -> bool:
-        """Extract RPA-3.0 format archive."""
-        try:
-            # Parse header: "RPA-3.0 XXXXXXXXXXXXXXXX YYYYYYYY\n"
-            # XXXXXXXXXXXXXXXX = hex offset to index
-            # YYYYYYYY = hex key for deobfuscation
-            parts = header.decode('utf-8', errors='replace').strip().split()
-            if len(parts) < 3:
-                self.logger.error(f"Invalid RPA-3.0 header: {header}")
-                return False
-            
-            offset = int(parts[1], 16)
-            key = int(parts[2], 16)
-            
-            # Read and decompress index
-            f.seek(offset)
-            index_data = f.read()
-            
+
+    def _extract_from_header(self, f: BinaryIO, header: bytes, output_dir: Path) -> bool:
+        """Parse header and delegate to the appropriate extraction method."""
+        parts = header.decode('utf-8', errors='replace').strip().split()
+        
+        # 3-part header: <MAGIC> <OFFSET_HEX> <KEY_HEX>
+        # Matches RPA-3.0, HHH-1.0, and any custom 3-parameter RPA archive
+        if len(parts) >= 3:
             try:
-                index = _safe_loads_rpa_index(zlib.decompress(index_data))
-            except Exception:
-                # Some archives use raw pickle
-                f.seek(offset)
-                index = _safe_loads_rpa_index(f.read())
-            
+                offset = int(parts[1], 16)
+                key = int(parts[2], 16)
+                return self._extract_rpa3_parsed(f, offset, key, output_dir)
+            except ValueError:
+                pass
+        
+        # 2-part header: <MAGIC> <OFFSET_HEX>
+        # Matches RPA-2.0 and 2-parameter RPA archives
+        if len(parts) >= 2:
+            try:
+                offset = int(parts[1], 16)
+                return self._extract_rpa2_parsed(f, offset, output_dir)
+            except ValueError:
+                pass
+
+        self.logger.error(f"Unknown RPA format: {header[:20]}")
+        return False
+    
+    def _read_index_rpa3(self, f: BinaryIO, offset: int, key: int) -> Optional[Dict]:
+        """
+        Read index with multi-stage deobfuscation and decompression:
+        1. Standard zlib decompressed pickle
+        2. SHA-256 keystream XOR deobfuscated + zlib decompressed pickle (HHH-1.0, etc.)
+        3. SHA-256 keystream XOR deobfuscated raw pickle
+        4. Raw uncompressed pickle fallback
+        """
+        f.seek(offset)
+        index_data = f.read()
+
+        # Stage 1: Standard zlib decompression
+        try:
+            return _safe_loads_rpa_index(zlib.decompress(index_data))
+        except Exception:
+            pass
+
+        # Stage 2: Keystream XOR + zlib (HHH-1.0 and custom obfuscated archives)
+        try:
+            xored = _archive_index_xor(index_data, key)
+            return _safe_loads_rpa_index(zlib.decompress(xored))
+        except Exception:
+            pass
+
+        # Stage 3: Keystream XOR raw pickle
+        try:
+            xored = _archive_index_xor(index_data, key)
+            return _safe_loads_rpa_index(xored)
+        except Exception:
+            pass
+
+        # Stage 4: Raw uncompressed pickle fallback
+        try:
+            return _safe_loads_rpa_index(index_data)
+        except Exception:
+            pass
+
+        return None
+
+    def _extract_rpa3_parsed(self, f: BinaryIO, offset: int, key: int, output_dir: Path) -> bool:
+        """Extract RPA-3.0 or custom 3-part archive using parsed offset and key."""
+        try:
+            index = self._read_index_rpa3(f, offset, key)
+            if index is None:
+                self.logger.error(f"Failed to decompress or parse RPA index at offset {offset:#x}")
+                return False
             return self._extract_files(f, index, output_dir, key)
-            
         except Exception as e:
             self.logger.error(f"RPA-3.0 extraction error: {e}")
             return False
-    
-    def _extract_rpa2(self, f: BinaryIO, header: bytes, output_dir: Path) -> bool:
-        """Extract RPA-2.0 format archive."""
+
+    def _extract_rpa3(self, f: BinaryIO, header: bytes, output_dir: Path) -> bool:
+        """Extract RPA-3.0 format archive (legacy signature compatibility)."""
+        parts = header.decode('utf-8', errors='replace').strip().split()
+        if len(parts) < 3:
+            self.logger.error(f"Invalid RPA-3.0 header: {header}")
+            return False
         try:
-            # Parse header: "RPA-2.0 XXXXXXXXXXXXXXXX\n"
-            parts = header.decode('utf-8', errors='replace').strip().split()
-            if len(parts) < 2:
-                self.logger.error(f"Invalid RPA-2.0 header: {header}")
-                return False
-            
             offset = int(parts[1], 16)
-            
-            # Read and decompress index
+            key = int(parts[2], 16)
+        except ValueError:
+            self.logger.error(f"Invalid RPA-3.0 header offsets: {header}")
+            return False
+        return self._extract_rpa3_parsed(f, offset, key, output_dir)
+
+    def _extract_rpa2_parsed(self, f: BinaryIO, offset: int, output_dir: Path) -> bool:
+        """Extract RPA-2.0 or custom 2-part archive using parsed offset."""
+        try:
             f.seek(offset)
             index_data = f.read()
-            
             try:
                 index = _safe_loads_rpa_index(zlib.decompress(index_data))
             except Exception:
                 f.seek(offset)
                 index = _safe_loads_rpa_index(f.read())
-            
-            # RPA-2.0 doesn't use key obfuscation
             return self._extract_files(f, index, output_dir, key=0)
-            
         except Exception as e:
             self.logger.error(f"RPA-2.0 extraction error: {e}")
             return False
+
+    def _extract_rpa2(self, f: BinaryIO, header: bytes, output_dir: Path) -> bool:
+        """Extract RPA-2.0 format archive (legacy signature compatibility)."""
+        parts = header.decode('utf-8', errors='replace').strip().split()
+        if len(parts) < 2:
+            self.logger.error(f"Invalid RPA-2.0 header: {header}")
+            return False
+        try:
+            offset = int(parts[1], 16)
+        except ValueError:
+            self.logger.error(f"Invalid RPA-2.0 header offset: {header}")
+            return False
+        return self._extract_rpa2_parsed(f, offset, output_dir)
     
     def _extract_files(self, f: BinaryIO, index: Dict, output_dir: Path, key: int = 0) -> bool:
         """Extract files from index to output directory."""

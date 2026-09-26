@@ -548,10 +548,10 @@ class RenPyParser:
         self.menu_def_re = re.compile(r'^menu\s*(?:"([^\"]*)"|\'([^\']*)\')?:')
         self.screen_def_re = re.compile(r'^screen\s+([A-Za-z_]\w*)')
         self.python_block_re = re.compile(r'^(?:init(?:\s+[-+]?\d+)?\s+)?python\b.*:')
-        # Label definition (ensure present for tests)
-        self.label_def_re = re.compile(r'^label\s+([A-Za-z_][\w\.]*)\s*(?!hide):')
+        # Label definition (ensure present for tests; allows local labels starting with '.')
+        self.label_def_re = re.compile(r'^label\s+(\.?[A-Za-z_][\w\.]*)\s*(?!hide):')
         # Hidden label definition (label xxx hide:) - these should be skipped
-        self.hidden_label_re = re.compile(r'^label\s+[A-Za-z_][\w\.]*\s+hide\s*:')
+        self.hidden_label_re = re.compile(r'^label\s+\.?[A-Za-z_][\w\.]*\s+hide\s*:')
         # -------------------------------------------------------------------------
         
         # Initialize v2.4.1 patterns
@@ -1121,7 +1121,7 @@ class RenPyParser:
             self._pop_contexts(context_stack, indent)
             
             # 2. Detect if this line starts a new context (label, screen, menu, python)
-            new_node = self._detect_new_context(stripped_line, indent)
+            new_node = self._detect_new_context(stripped_line, indent, context_stack)
             
             # Skip comments early
             if stripped_line.startswith('#'):
@@ -1136,6 +1136,10 @@ class RenPyParser:
             # 3. If it's a new context node, push it to stack AFTER building path for current strings 
             # (unless it's a one-line block? Ren'Py usually isn't)
             if new_node:
+                if new_node.kind in ('label', 'hidden_label'):
+                    # In Ren'Py, labels are global state machines, not indentation-nested blocks.
+                    # A new label replaces the previous active label scope entirely.
+                    context_stack[:] = [n for n in context_stack if n.kind not in ('label', 'hidden_label')]
                 context_stack.append(new_node)
             
             # --- String Extraction ---
@@ -2393,16 +2397,34 @@ class RenPyParser:
 
     def _pop_contexts(self, stack: List[ContextNode], current_indent: int) -> None:
         while stack and current_indent <= stack[-1].indent:
+            # Ren'Py labels are not block-scoped by indentation!
+            # Control flows linearly across indentation levels; a label remains
+            # active until explicitly replaced by another label statement.
+            if stack[-1].kind in ('label', 'hidden_label'):
+                break
             stack.pop()
 
-    def _detect_new_context(self, stripped_line: str, indent: int) -> Optional[ContextNode]:
+    def _detect_new_context(
+        self, stripped_line: str, indent: int, stack: Optional[List[ContextNode]] = None
+    ) -> Optional[ContextNode]:
         # Check for hidden labels first - these should be skipped for translation
         if self.hidden_label_re.match(stripped_line):
             return ContextNode(indent=indent, kind='hidden_label', name='hidden')
         
         label_match = self.label_def_re.match(stripped_line)
         if label_match:
-            return ContextNode(indent=indent, kind='label', name=label_match.group(1))
+            raw_name = label_match.group(1)
+            # Ren'Py local labels start with '.' (e.g. label .sub_scene:)
+            # and are scoped to the preceding global label.
+            if raw_name.startswith('.') and stack:
+                parent_label = 'start'
+                for node in reversed(stack):
+                    if node.kind == 'label' and not node.name.startswith('.'):
+                        parent_label = node.name
+                        break
+                full_name = f"{parent_label}{raw_name}"
+                return ContextNode(indent=indent, kind='label', name=full_name)
+            return ContextNode(indent=indent, kind='label', name=raw_name)
 
         menu_match = self.menu_def_re.match(stripped_line)
         if menu_match:

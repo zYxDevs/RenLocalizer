@@ -87,6 +87,18 @@ class UnrpaAdapter:
         # Try native parser first if we know unrpa won't work
         if self._use_native:
             return self._extract_native(rpa_path, output_dir)
+
+        # Quick check: does the archive start with standard unrpa signatures?
+        # Non-standard headers (e.g. HHH-1.0) trigger loud auto-detection warnings
+        # and GitHub issue templates from unrpa. Route them directly to our native parser!
+        try:
+            with open(rpa_path, 'rb') as f:
+                peek_header = f.read(16)
+                if not (peek_header.startswith(b"RPA-3.0") or peek_header.startswith(b"RPA-2.0") or peek_header.startswith(b"RPA-1.0")):
+                    self.logger.info(f"Non-standard RPA header detected ({peek_header[:10]!r}), using native parser directly.")
+                    return self._extract_native(rpa_path, output_dir)
+        except Exception:
+            pass
         
         # Try unrpa, fall back to native on failure
         try:
@@ -161,6 +173,8 @@ class UnrpaAdapter:
         rpa_files = list(game_dir.glob("**/*.rpa")) + list(game_dir.glob("**/*.RPA"))
         # De-duplicate in case of weird file systems
         rpa_files = list(set(rpa_files))
+        # Prioritize script archives first so game dialogues and code are extracted early
+        rpa_files.sort(key=lambda p: (0 if 'script' in p.name.lower() else 1, p.name.lower()))
         
         self.logger.info(f"Found {len(rpa_files)} RPA files in {game_dir}")
         

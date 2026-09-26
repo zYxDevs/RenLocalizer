@@ -19,6 +19,8 @@ from src.utils.rpa_parser import (
     RPAParser,
     _RestrictedRPAUnpickler,
     _safe_loads_rpa_index,
+    _archive_index_keystream,
+    _archive_index_xor,
     extract_rpa,
 )
 
@@ -154,4 +156,61 @@ class TestExtractArchive:
         # Safe file must exist
         assert (out_dir / "safe_folder" / "game.rpy").exists()
         assert (out_dir / "safe_folder" / "game.rpy").read_bytes() == b"SAFE_CONTENT"
+
+    def test_hhh_obfuscated_rpa_round_trip(self, tmp_path):
+        """Test extraction of custom/obfuscated RPA (HHH-1.0 header + SHA-256 keystream XOR)."""
+        files = {
+            "game/scripts/story.rpyc": b"\x00\x01\x02fake_rpyc_data",
+            "game/scripts/options.rpyc": b"renpy_options_binary",
+        }
+        key = 0x27EB4993
+        # Assemble body + index
+        header_placeholder = b"HHH-1.0 " + b"0" * 16 + b" " + b"0" * 8 + b"\n"
+        body_start = len(header_placeholder)
+        body = b""
+        index = {}
+        for name, content in files.items():
+            start = body_start + len(body)
+            body += content
+            index[name] = [(start ^ key, len(content) ^ key, b"")]
+
+        compressed_index = zlib.compress(pickle.dumps(index))
+        xored_index = _archive_index_xor(compressed_index, key)
+        index_offset = body_start + len(body)
+        header = (
+            b"HHH-1.0 "
+            + format(index_offset, "016x").encode("ascii")
+            + b" "
+            + format(key, "08x").encode("ascii")
+            + b"\n"
+        )
+
+        rpa_path = tmp_path / "custom_hhh.rpa"
+        rpa_path.write_bytes(header + body + xored_index)
+        out_dir = tmp_path / "out_hhh"
+
+        parser = RPAParser()
+        assert parser.extract_archive(rpa_path, out_dir) is True
+
+        for name, content in files.items():
+            extracted = out_dir / name
+            assert extracted.exists(), f"missing {name}"
+            assert extracted.read_bytes() == content
+
+
+class TestArchiveDeobfuscation:
+    def test_keystream_xor_roundtrip(self):
+        key = 0x12345678
+        data = b"Hello, RenLocalizer obfuscation test payload!" * 10
+        xored = _archive_index_xor(data, key)
+        assert xored != data
+        restored = _archive_index_xor(xored, key)
+        assert restored == data
+
+    def test_keystream_deterministic(self):
+        key = 0xDEADBEEF
+        ks1 = _archive_index_keystream(key, 64)
+        ks2 = _archive_index_keystream(key, 64)
+        assert ks1 == ks2
+        assert len(ks1) == 64
 

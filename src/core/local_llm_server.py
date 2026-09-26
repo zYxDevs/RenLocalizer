@@ -182,6 +182,15 @@ def _windows_kill_on_close_job():
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.SetInformationJobObject.argtypes = (
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD
+        )
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
@@ -231,8 +240,11 @@ def _assign_to_job(job, process) -> None:
         return
     try:
         import ctypes
+        from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
         if not kernel32.AssignProcessToJobObject(job, int(process._handle)):
             logger.debug("AssignProcessToJobObject failed (error %s)", ctypes.get_last_error())
     except Exception as exc:

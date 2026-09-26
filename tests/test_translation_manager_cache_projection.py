@@ -131,3 +131,81 @@ def test_translate_batch_routes_to_deepl_and_libre_without_name_error() -> None:
     )
     assert len(results) == 1
     assert results[0].translated_text == "Selam"
+
+
+def test_corrupt_cache_entries_rejected_from_cache_put() -> None:
+    manager = TranslationManager()
+    key = ("google", "en", "tr", "Hello")
+    corrupt_result = TranslationResult(
+        original_text="Hello",
+        translated_text='Merhaba <ph id="0">leaked</ph>',
+        source_lang="en",
+        target_lang="tr",
+        engine=TranslationEngine.GOOGLE,
+        success=True,
+    )
+    asyncio.run(manager._cache_put(key, corrupt_result))
+    assert key not in manager._cache, "Corrupt translations with leaked placeholders must not be cached"
+
+    clean_result = TranslationResult(
+        original_text="Hello",
+        translated_text="Merhaba",
+        source_lang="en",
+        target_lang="tr",
+        engine=TranslationEngine.GOOGLE,
+        success=True,
+    )
+    asyncio.run(manager._cache_put(key, clean_result))
+    assert key in manager._cache
+    assert manager._cache[key].translated_text == "Merhaba"
+
+
+def test_corrupt_cache_entries_dropped_on_load(tmp_path) -> None:
+    import json
+    cache_file = tmp_path / "translation_cache.json"
+    raw_data = {
+        "google": {
+            "en": {
+                "tr": {
+                    "Hello": "Merhaba",
+                    "Bad Text 1": 'Bozuk <ph id="G0">tag</ph>',
+                    "Bad Text 2": "Bozuk ⟦RLPH001_0⟧",
+                    "Valid Text": "Gecerli",
+                }
+            }
+        }
+    }
+    cache_file.write_text(json.dumps(raw_data, ensure_ascii=False), encoding="utf-8")
+
+    manager = TranslationManager()
+    manager.load_cache(str(cache_file))
+
+    assert len(manager._cache) == 2
+    assert ("google", "en", "tr", "Hello") in manager._cache
+    assert ("google", "en", "tr", "Valid Text") in manager._cache
+    assert ("google", "en", "tr", "Bad Text 1") not in manager._cache
+    assert ("google", "en", "tr", "Bad Text 2") not in manager._cache
+
+
+def test_cache_remove_and_update_text() -> None:
+    manager = TranslationManager()
+    key = ("google", "en", "tr", "Start")
+    res = TranslationResult(
+        original_text="Start",
+        translated_text="{color=#fff}Basla{/color}",
+        source_lang="en",
+        target_lang="tr",
+        engine=TranslationEngine.GOOGLE,
+        success=True,
+    )
+    asyncio.run(manager._cache_put(key, res))
+    assert key in manager._cache
+
+    # Update with normalized text
+    asyncio.run(manager.cache_update_text(key, "Basla"))
+    assert manager._cache[key].translated_text == "Basla"
+
+    # Remove key
+    asyncio.run(manager.cache_remove(key))
+    assert key not in manager._cache
+

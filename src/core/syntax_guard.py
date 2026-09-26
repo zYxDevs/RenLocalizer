@@ -1533,20 +1533,26 @@ def restore_renpy_syntax_xml(text: str, placeholders: Dict[str, str]) -> str:
     if not text or not placeholders:
         return text
     
-    # Regex: <ph id="N">...</ph> or <ph id = 'N'>...</ ph>
-    # Case insensitive, whitespace tolerant for attributes and closing tag
-    ph_pattern = re.compile(
-        r'<ph\b[^>]*\bid\s*=\s*["\']?([A-Za-z0-9_]+)["\']?[^>]*>.*?</\s*ph\s*>',
+    # Innermost-first regex: matches <ph id="...">...</ph> where inner content
+    # does NOT contain another unclosed '<ph' tag. Multi-pass loop ensures
+    # any nested/adjacent XML tags are safely and completely unwrapped without leftover tags.
+    ph_pattern_inner = re.compile(
+        r'<ph\b[^>]*\bid\s*=\s*["\']?([A-Za-z0-9_]+)["\']?[^>]*>((?:(?!<ph\b).)*?)</\s*ph\s*>',
         re.IGNORECASE | re.DOTALL
     )
     
     def replacer(match):
         ph_id = match.group(1)
-        # ID map'te varsa orijinali dön, yoksa match'i (veya boşu) dön
+        # ID map'te varsa orijinali dön, yoksa match'i dön (integrity check yakalar)
         if ph_id in placeholders:
             return placeholders[ph_id]
-        return match.group(0) # Bulunamazsa dokunma (integrity check yakalar)
+        return match.group(0)
         
-    result = ph_pattern.sub(replacer, text)
+    cur = text
+    for _ in range(5):
+        next_cur = ph_pattern_inner.sub(replacer, cur)
+        if next_cur == cur:
+            break
+        cur = next_cur
     
-    return result
+    return cur

@@ -110,3 +110,26 @@ def test_glossary_extractor_stopwords_filter(tmp_path):
     assert "Nurse" not in extracted
 
 
+def test_protect_terms_avoids_nesting_inside_existing_placeholders():
+    """Verify protect_terms does not inject inside already protected <ph> or token spans."""
+    from src.core.syntax_guard import protect_renpy_syntax_xml, restore_renpy_syntax_xml
+    
+    text = "That's right, [Seorin]. Chaemin agrees with Seorin."
+    glossary = {"Seorin": "Seorin", "Chaemin": "Chaemin"}
+    
+    prot_xml, ph_xml = protect_renpy_syntax_xml(text)
+    prot_gloss, ph_gloss = GlossaryManager.protect_terms(prot_xml, glossary, xml_mode=True)
+    
+    # [Seorin] was already protected as <ph id="0">[Seorin]</ph>.
+    # Glossary protection must NOT turn it into <ph id="0">[<ph id="G0">Seorin</ph>]</ph>.
+    assert '<ph id="0">[Seorin]</ph>' in prot_gloss
+    assert '<ph id="0">[<ph' not in prot_gloss
+    
+    all_ph = {}
+    all_ph.update(ph_xml)
+    all_ph.update(ph_gloss)
+    restored = restore_renpy_syntax_xml(prot_gloss, all_ph)
+    assert "</ph>" not in restored
+    assert restored == "That's right, [Seorin]. Chaemin agrees with Seorin."
+
+
